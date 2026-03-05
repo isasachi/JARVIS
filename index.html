@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>J.A.R.V.I.S.</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#020810;
+  --c:#00e5ff;--cg:rgba(0,229,255,.52);--cd:rgba(0,229,255,.13);--cb:rgba(0,229,255,.16);
+  --r:#ff3355;--rg:rgba(255,51,85,.52);
+  --amber:#ffaa00;
+  --tx:#b8dde8;--mu:rgba(184,221,232,.35);--gr:rgba(0,229,255,.026);
+}
+html,body{width:100%;min-height:100vh;background:var(--bg);font-family:'Share Tech Mono',monospace;color:var(--tx)}
+
+/* grid */
+body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(var(--gr) 1px,transparent 1px),linear-gradient(90deg,var(--gr) 1px,transparent 1px);
+  background-size:44px 44px}
+body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse 65% 65% at 50% 50%,transparent 20%,var(--bg) 100%)}
+
+/* scanlines */
+#scan{position:fixed;inset:0;z-index:500;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,.055) 3px,rgba(0,0,0,.055) 4px)}
+
+/* app shell */
+#app{position:relative;z-index:1;display:flex;flex-direction:column;min-height:100vh}
+
+/* ── header ── */
+header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:13px 28px;flex-shrink:0;
+  border-bottom:1px solid var(--cb);
+  background:rgba(2,8,16,.88);
+  position:sticky;top:0;z-index:200;backdrop-filter:blur(14px);
+}
+.logo{font-family:'Orbitron',sans-serif;font-weight:900;font-size:1.2rem;letter-spacing:.28em;
+  color:var(--c);text-shadow:0 0 16px var(--cg),0 0 40px rgba(0,229,255,.15)}
+.logo em{color:rgba(0,229,255,.34);font-style:normal;font-weight:400}
+.hd-mid{display:flex;align-items:center;gap:11px;font-size:.59rem;letter-spacing:.15em;color:var(--mu);text-transform:uppercase}
+.pulse{width:6px;height:6px;border-radius:50%;background:var(--c);box-shadow:0 0 7px var(--c);animation:blk 2s ease-in-out infinite;flex-shrink:0}
+.pulse.live{background:var(--r);box-shadow:0 0 7px var(--r);animation:blk .5s ease-in-out infinite}
+@keyframes blk{0%,100%{opacity:1}50%{opacity:.18}}
+.hd-clock{font-family:'Orbitron',sans-serif;font-size:.64rem;color:var(--c);opacity:.48}
+
+/* ── main ── */
+main{flex:1;display:flex;flex-direction:column;align-items:center;padding:44px 20px 60px;gap:28px;position:relative;z-index:1}
+
+/* ambient glow */
+#glow{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:580px;height:580px;border-radius:50%;pointer-events:none;z-index:0;
+  background:radial-gradient(circle,rgba(0,229,255,.04) 0%,transparent 65%);
+  animation:gb 4s ease-in-out infinite;transition:background .6s}
+#glow.live{background:radial-gradient(circle,rgba(255,51,85,.06) 0%,rgba(0,229,255,.02) 45%,transparent 65%);animation:gb 1.7s ease-in-out infinite}
+@keyframes gb{0%,100%{opacity:.8;transform:translate(-50%,-50%) scale(1)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.1)}}
+
+/* ── orb ── */
+.orb-wrap{position:relative;z-index:1;width:240px;height:240px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+
+.ring{position:absolute;border-radius:50%;border:1px solid var(--c);animation:spin linear infinite;pointer-events:none;transition:border-color .5s,opacity .5s}
+.rA{width:236px;height:236px;opacity:.07;animation-duration:30s;border-style:dashed}
+.rB{width:208px;height:208px;opacity:.14;animation-duration:19s;animation-direction:reverse}
+.rB::after{content:'';position:absolute;top:-4px;left:50%;width:7px;height:7px;border-radius:50%;
+  background:var(--c);box-shadow:0 0 9px var(--c);transform:translateX(-50%);transition:background .4s,box-shadow .4s}
+.rC{width:178px;height:178px;opacity:.10;animation-duration:13s}
+.rD{width:148px;height:148px;opacity:.22;animation-duration:7.5s;animation-direction:reverse}
+.live .rA{opacity:.22;border-color:var(--r);animation-duration:5.5s}
+.live .rB{opacity:.32;border-color:var(--r);animation-duration:3.5s}
+.live .rB::after{background:var(--r);box-shadow:0 0 9px var(--r)}
+.live .rC{opacity:.22;border-color:var(--r);animation-duration:2.2s}
+.live .rD{opacity:.42;border-color:var(--r);animation-duration:1.3s}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+
+.orb-core{position:absolute;width:112px;height:112px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,rgba(0,229,255,.09) 0%,transparent 70%);
+  animation:bth 3s ease-in-out infinite;transition:background .4s}
+.live .orb-core{background:radial-gradient(circle,rgba(255,51,85,.13) 0%,transparent 70%)}
+@keyframes bth{0%,100%{transform:scale(1)}50%{transform:scale(1.22)}}
+
+/* ── the actual button ── */
+#orb-btn{
+  position:relative;z-index:10;
+  width:80px;height:80px;border-radius:50%;
+  background:rgba(0,229,255,.06);
+  border:1.5px solid var(--c);
+  cursor:pointer;outline:none;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .3s,border-color .3s,box-shadow .3s,transform .15s;
+  box-shadow:0 0 22px rgba(0,229,255,.14),inset 0 0 18px rgba(0,229,255,.06);
+}
+#orb-btn:hover{
+  background:rgba(0,229,255,.12);
+  box-shadow:0 0 36px rgba(0,229,255,.32),inset 0 0 24px rgba(0,229,255,.1);
+}
+#orb-btn:active{transform:scale(.95)}
+#orb-btn.live{
+  border-color:var(--r);
+  background:rgba(255,51,85,.08);
+  box-shadow:0 0 36px rgba(255,51,85,.38),inset 0 0 24px rgba(255,51,85,.1);
+  animation:btn-pulse .9s ease-in-out infinite;
+}
+@keyframes btn-pulse{
+  0%,100%{box-shadow:0 0 36px rgba(255,51,85,.38),inset 0 0 24px rgba(255,51,85,.1)}
+  50%{box-shadow:0 0 55px rgba(255,51,85,.6),inset 0 0 34px rgba(255,51,85,.18)}
+}
+#orb-btn svg{width:28px;height:28px;color:var(--c);transition:color .3s}
+#orb-btn.live svg{color:var(--r)}
+
+/* loading spinner inside btn */
+#orb-btn.loading{border-color:var(--amber);background:rgba(255,170,0,.07);cursor:wait;animation:none}
+#orb-btn.loading svg{color:var(--amber)}
+#orb-btn.loading .spin-ring{display:block}
+.spin-ring{display:none;position:absolute;inset:-2px;border-radius:50%;
+  border:2px solid transparent;border-top-color:var(--amber);animation:spin .7s linear infinite}
+
+/* ── status ── */
+#status{position:relative;z-index:1;font-size:.6rem;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--mu);text-align:center;transition:color .3s;min-height:16px}
+#status.live{color:var(--r);animation:flk 1.8s infinite}
+#status.loading{color:var(--amber)}
+@keyframes flk{0%,100%{opacity:1}43%{opacity:.7}47%{opacity:.28}51%{opacity:.88}}
+
+/* ── wave ── */
+#wave{position:relative;z-index:1;display:flex;align-items:center;gap:4px;height:26px}
+.wb{width:3px;border-radius:3px;background:var(--c);opacity:.3;transform-origin:center;animation:wi 2.4s ease-in-out infinite}
+.wb:nth-child(1){height:5px;animation-delay:0s}.wb:nth-child(2){height:9px;animation-delay:.13s}
+.wb:nth-child(3){height:14px;animation-delay:.26s}.wb:nth-child(4){height:19px;animation-delay:.39s}
+.wb:nth-child(5){height:22px;animation-delay:.52s}.wb:nth-child(6){height:19px;animation-delay:.39s}
+.wb:nth-child(7){height:14px;animation-delay:.26s}.wb:nth-child(8){height:9px;animation-delay:.13s}
+.wb:nth-child(9){height:5px;animation-delay:0s}
+@keyframes wi{0%,100%{transform:scaleY(.28);opacity:.18}50%{transform:scaleY(1);opacity:.42}}
+#wave.live .wb{background:var(--r);opacity:.75;animation:wl .5s ease-in-out infinite}
+@keyframes wl{0%,100%{transform:scaleY(.38);opacity:.5}50%{transform:scaleY(1);opacity:1}}
+
+/* ── card ── */
+.card{
+  position:relative;z-index:1;
+  display:flex;flex-direction:column;width:300px;
+  border:1px solid var(--cb);background:rgba(0,229,255,.02);
+}
+.card::before{content:'';position:absolute;top:-1px;left:-1px;width:10px;height:10px;border-top:1px solid var(--c);border-left:1px solid var(--c);opacity:.45}
+.card::after{content:'';position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-bottom:1px solid var(--c);border-right:1px solid var(--c);opacity:.45}
+.row{display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-bottom:1px solid rgba(0,229,255,.07);font-size:.58rem;letter-spacing:.12em}
+.row:last-child{border-bottom:none}
+.rk{color:var(--mu);text-transform:uppercase}
+.rv{color:var(--c);opacity:.75}
+.rv.g{color:#00ff88;opacity:.85}
+.rv.r{color:var(--r);opacity:.92;animation:flk 1.8s infinite}
+
+/* error toast */
+#toast{
+  position:fixed;bottom:52px;left:50%;transform:translateX(-50%) translateY(10px);
+  background:rgba(255,51,85,.14);border:1px solid var(--r);
+  padding:9px 20px;font-size:.65rem;letter-spacing:.1em;color:var(--r);
+  z-index:999;opacity:0;transition:opacity .3s,transform .3s;pointer-events:none;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ── footer ── */
+footer{flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
+  padding:7px 28px;border-top:1px solid var(--cb);background:rgba(2,8,16,.92);
+  font-size:.54rem;letter-spacing:.13em;color:var(--mu);position:relative;z-index:1}
+.ft-r{display:flex;gap:22px}
+#ft-live.live{color:var(--r);animation:flk 1.8s infinite}
+</style>
+</head>
+<body>
+
+<div id="scan"></div>
+<div id="glow"></div>
+<div id="toast"></div>
+
+<div id="app">
+
+  <header>
+    <div class="logo">J.A.R.V.I.S<em>.ai</em></div>
+    <div class="hd-mid">
+      <div class="pulse" id="dot"></div>
+      <span id="hd-state">STANDBY</span>
+      <span style="opacity:.26">[ VOICE INTERFACE ]</span>
+    </div>
+    <div class="hd-clock" id="clk">--:--:--</div>
+  </header>
+
+  <main>
+
+    <!-- orb -->
+    <div class="orb-wrap" id="orb-wrap">
+      <div class="ring rA"></div>
+      <div class="ring rB"></div>
+      <div class="ring rC"></div>
+      <div class="ring rD"></div>
+      <div class="orb-core"></div>
+      <button id="orb-btn" title="Start / end voice session" aria-label="Toggle voice call">
+        <div class="spin-ring"></div>
+        <!-- phone icon -->
+        <svg id="icon-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81 19.79 19.79 0 01.11 1.2 2 2 0 012.1 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92z"/>
+        </svg>
+        <!-- end-call icon (hidden by default) -->
+        <svg id="icon-end" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="display:none;transform:rotate(135deg)">
+          <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81 19.79 19.79 0 01.11 1.2 2 2 0 012.1 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div id="status">○ CLICK ORB TO START SESSION</div>
+
+    <div id="wave">
+      <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+      <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+      <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+    </div>
+
+    <div class="card">
+      <div class="row"><span class="rk">Agent ID</span><span class="rv">agent_5701kjxhwpf2…</span></div>
+      <div class="row"><span class="rk">Voice Engine</span><span class="rv g">ELEVENLABS ●</span></div>
+      <div class="row"><span class="rk">Protocol</span><span class="rv">WEBRTC / SDK</span></div>
+      <div class="row"><span class="rk">Session</span><span class="rv" id="sess">○ IDLE</span></div>
+
+    </div>
+
+  </main>
+
+  <footer>
+    <span>JARVIS // VOICE INTERFACE v3.1</span>
+    <div class="ft-r">
+      <span>@ELEVENLABS/CLIENT SDK</span>
+      <span id="ft-live">○ AWAITING INPUT</span>
+    </div>
+  </footer>
+
+</div>
+
+<script type="module">
+  import { Conversation } from 'https://cdn.skypack.dev/@11labs/client';
+
+  const AGENT_ID = 'agent_5701kjxhwpf2faj9dvk2bavz423n';
+
+  /* ── elements ── */
+  const orbBtn   = document.getElementById('orb-btn');
+  const orbWrap  = document.getElementById('orb-wrap');
+  const glow     = document.getElementById('glow');
+  const dot      = document.getElementById('dot');
+  const hdState  = document.getElementById('hd-state');
+  const statusEl = document.getElementById('status');
+  const waveEl   = document.getElementById('wave');
+  const sessEl   = document.getElementById('sess');
+  const ftLive   = document.getElementById('ft-live');
+  const iconPh   = document.getElementById('icon-phone');
+  const iconEnd  = document.getElementById('icon-end');
+  const toast    = document.getElementById('toast');
+
+  /* ── clock ── */
+  const fmt = () => new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const tick = () => { document.getElementById('clk').textContent = fmt(); };
+  tick(); setInterval(tick, 1000);
+
+  /* ── toast ── */
+  let toastTimer;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 4000);
+  }
+
+  /* ── ui states ── */
+  function setIdle() {
+    orbWrap.classList.remove('live');
+    orbBtn.classList.remove('live','loading');
+    glow.classList.remove('live');
+    dot.classList.remove('live');
+    waveEl.classList.remove('live');
+    statusEl.classList.remove('live','loading');
+    hdState.textContent   = 'STANDBY';
+    statusEl.textContent  = '○ CLICK ORB TO START SESSION';
+    sessEl.textContent    = '○ IDLE'; sessEl.className = 'rv';
+    ftLive.textContent    = '○ AWAITING INPUT'; ftLive.className = '';
+    iconPh.style.display  = '';
+    iconEnd.style.display = 'none';
+  }
+
+  function setLoading() {
+    orbBtn.classList.add('loading');
+    statusEl.classList.add('loading');
+    statusEl.classList.remove('live');
+    statusEl.textContent = '◈ CONNECTING…';
+    hdState.textContent  = 'CONNECTING';
+  }
+
+  function setLive() {
+    orbWrap.classList.add('live');
+    orbBtn.classList.remove('loading');
+    orbBtn.classList.add('live');
+    glow.classList.add('live');
+    dot.classList.add('live');
+    waveEl.classList.add('live');
+    statusEl.classList.remove('loading');
+    statusEl.classList.add('live');
+    hdState.textContent   = 'SESSION ACTIVE';
+    statusEl.textContent  = '● LISTENING — SPEAK NOW';
+    sessEl.textContent    = '● LIVE'; sessEl.className = 'rv r';
+    ftLive.textContent    = '● LIVE SESSION'; ftLive.classList.add('live');
+    iconPh.style.display  = 'none';
+    iconEnd.style.display = '';
+  }
+
+  /* ── conversation ── */
+  let conversation = null;
+
+  async function startCall() {
+    setLoading();
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      conversation = await Conversation.startSession({
+        agentId: AGENT_ID,
+        onConnect:    ()    => setLive(),
+        onDisconnect: ()    => { conversation = null; setIdle(); },
+        onError:      (err) => { showToast('Error: ' + (err?.message || err)); setIdle(); conversation = null; },
+        onModeChange: (m)   => {
+          if (conversation && m?.mode === 'speaking') {
+            statusEl.textContent = '▶ JARVIS SPEAKING…';
+          } else if (conversation && m?.mode === 'listening') {
+            statusEl.textContent = '● LISTENING — SPEAK NOW';
+          }
+        }
+      });
+    } catch(err) {
+      showToast('Could not start: ' + (err?.message || err));
+      setIdle();
+    }
+  }
+
+  async function endCall() {
+    if (!conversation) return;
+    try { await conversation.endSession(); } catch(e) {}
+    conversation = null;
+    setIdle();
+  }
+
+  /* ── orb click ── */
+  orbBtn.addEventListener('click', async () => {
+    if (orbBtn.classList.contains('loading')) return;
+    if (conversation) { await endCall(); }
+    else              { await startCall(); }
+  });
+</script>
+
+</body>
+</html>

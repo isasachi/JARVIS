@@ -179,9 +179,6 @@ async def synthesize_custom_voice(text: str) -> str:
         'language': CUSTOM_VOICE_LANG,
     }
 
-    if CUSTOM_VOICE_WAV_URL:
-        payload['speaker_wav_url'] = CUSTOM_VOICE_WAV_URL
-
     deadline = time.monotonic() + VOICE_SERVICE_TIMEOUT
     attempt = 0
 
@@ -309,4 +306,5 @@ if __name__ == '__main__':
             agent_name=os.getenv('AGENT_NAME', 'jarvis-agent'),
         )
     )
+
 

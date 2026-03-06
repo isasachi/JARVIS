@@ -1,6 +1,7 @@
 import os
 import tempfile
 import uuid
+from pathlib import Path
 from threading import Lock, Thread
 
 import requests
@@ -15,6 +16,7 @@ MODEL_NAME = os.getenv('XTTS_MODEL', 'tts_models/multilingual/multi-dataset/xtts
 DEFAULT_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es')
 DEFAULT_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
 DEFAULT_WAV_PATH = os.getenv('CUSTOM_VOICE_WAV_PATH', '/tmp/custom_voice.wav')
+BUNDLED_WAV_PATH = str(Path(__file__).with_name('custom_voice.wav'))
 
 _tts = None
 _tts_lock = Lock()
@@ -42,13 +44,26 @@ def get_tts() -> TTS:
     return _tts
 
 
+def _resolve_local_reference_wav() -> str | None:
+    if os.path.exists(BUNDLED_WAV_PATH) and os.path.getsize(BUNDLED_WAV_PATH) > 0:
+        return BUNDLED_WAV_PATH
+    if os.path.exists(DEFAULT_WAV_PATH) and os.path.getsize(DEFAULT_WAV_PATH) > 0:
+        return DEFAULT_WAV_PATH
+    return None
+
+
 def ensure_reference_wav(custom_url: str | None) -> str:
     global _cached_wav_url
 
+    # Prefer bundled/custom local WAV to avoid runtime network dependency.
+    local_wav = _resolve_local_reference_wav()
+    if local_wav and not (custom_url or '').strip():
+        return local_wav
+
     url = (custom_url or DEFAULT_WAV_URL).strip()
     if not url:
-        if os.path.exists(DEFAULT_WAV_PATH):
-            return DEFAULT_WAV_PATH
+        if local_wav:
+            return local_wav
         raise HTTPException(status_code=400, detail='No speaker reference wav configured')
 
     with _wav_lock:
@@ -59,6 +74,8 @@ def ensure_reference_wav(custom_url: str | None) -> str:
             response = requests.get(url, timeout=30)
             response.raise_for_status()
         except Exception as exc:
+            if local_wav:
+                return local_wav
             raise HTTPException(status_code=400, detail=f'Failed to fetch speaker wav: {exc}') from exc
 
         with open(DEFAULT_WAV_PATH, 'wb') as f:
@@ -72,8 +89,7 @@ def _run_warmup() -> None:
     global _warmup_started, _warmup_ready, _warmup_error
     try:
         get_tts()
-        if DEFAULT_WAV_URL:
-            ensure_reference_wav(None)
+        ensure_reference_wav(None)
         _warmup_ready = True
         _warmup_error = ''
     except Exception as exc:

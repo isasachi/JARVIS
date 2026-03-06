@@ -1,7 +1,7 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
-import { AccessToken, AgentDispatchClient } from 'livekit-server-sdk';
+import { AccessToken, AgentDispatchClient, RoomServiceClient } from 'livekit-server-sdk';
 
 dotenv.config();
 
@@ -20,6 +20,7 @@ if (!livekitUrl || !apiKey || !apiSecret) {
 }
 
 const dispatchClient = new AgentDispatchClient(livekitUrl, apiKey, apiSecret);
+const roomServiceClient = new RoomServiceClient(livekitUrl, apiKey, apiSecret);
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -47,6 +48,17 @@ app.post('/api/livekit/token', async (req, res) => {
       canSubscribe: true,
       canPublishData: true,
     });
+
+    try {
+      await roomServiceClient.createRoom({ name: roomName });
+    } catch (roomCreateError) {
+      const msg = String(roomCreateError?.message ?? roomCreateError);
+      if (!msg.toLowerCase().includes('already exists')) {
+        return res.status(500).json({
+          error: `Room create failed: ${msg}`,
+        });
+      }
+    }
 
     try {
       const existing = await dispatchClient.listDispatch(roomName);

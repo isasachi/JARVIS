@@ -22,6 +22,27 @@ if (!livekitUrl || !apiKey || !apiSecret) {
 const dispatchClient = new AgentDispatchClient(livekitUrl, apiKey, apiSecret);
 const roomServiceClient = new RoomServiceClient(livekitUrl, apiKey, apiSecret);
 
+function isDispatchActive(dispatch) {
+  const status = String(dispatch?.state?.status ?? dispatch?.status ?? '').toUpperCase();
+  return status === 'JS_PENDING' || status === 'JS_RUNNING';
+}
+
+async function ensureAgentDispatch(roomName, participantName) {
+  const existing = await dispatchClient.listDispatch(roomName);
+  const alreadyActive = Array.isArray(existing)
+    && existing.some((dispatch) => dispatch?.agentName === agentName && isDispatchActive(dispatch));
+
+  if (alreadyActive) {
+    return { created: false };
+  }
+
+  await dispatchClient.createDispatch(roomName, agentName, {
+    metadata: JSON.stringify({ source: 'web', participantName }),
+  });
+
+  return { created: true };
+}
+
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
@@ -33,6 +54,7 @@ app.post('/api/livekit/token', async (req, res) => {
   try {
     const roomName = req.body?.roomName ?? 'jarvis-room';
     const participantName = req.body?.participantName ?? `user_${Date.now()}`;
+    console.log(`[token] room=${roomName} participant=${participantName}`);
 
     const at = new AccessToken(apiKey, apiSecret, {
       identity: participantName,
@@ -61,15 +83,7 @@ app.post('/api/livekit/token', async (req, res) => {
     }
 
     try {
-      const existing = await dispatchClient.listDispatch(roomName);
-      const alreadyDispatched = Array.isArray(existing)
-        && existing.some((dispatch) => dispatch?.agentName === agentName);
-
-      if (!alreadyDispatched) {
-        await dispatchClient.createDispatch(roomName, agentName, {
-          metadata: JSON.stringify({ source: 'web-token-endpoint', participantName }),
-        });
-      }
+      await ensureAgentDispatch(roomName, participantName);
     } catch (dispatchError) {
       return res.status(500).json({
         error: `Agent dispatch failed: ${dispatchError?.message ?? String(dispatchError)}`,
@@ -84,6 +98,19 @@ app.post('/api/livekit/token', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error?.message ?? 'Token generation failed' });
+  }
+});
+
+app.post('/api/livekit/dispatch', async (req, res) => {
+  try {
+    const roomName = req.body?.roomName ?? 'jarvis-room';
+    const participantName = req.body?.participantName ?? `user_${Date.now()}`;
+    console.log(`[dispatch] room=${roomName} participant=${participantName}`);
+
+    const result = await ensureAgentDispatch(roomName, participantName);
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    return res.status(500).json({ error: error?.message ?? 'Dispatch failed' });
   }
 });
 

@@ -98,6 +98,21 @@ export default function App() {
     return data;
   }
 
+  async function requestAgentDispatch() {
+    const response = await fetch(`${API_BASE}/api/livekit/dispatch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomName: ROOM_NAME, participantName }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(body || `Dispatch request failed (${response.status})`);
+    }
+
+    return response.json();
+  }
+
   function bindRoomEvents(room) {
     room.on(RoomEvent.Disconnected, () => {
       roomRef.current = null;
@@ -120,7 +135,7 @@ export default function App() {
       }
     });
 
-    room.on(RoomEvent.TrackSubscribed, (track, publication) => {
+    room.on(RoomEvent.TrackSubscribed, async (track, publication) => {
       if (track.kind !== Track.Kind.Audio || !audioContainerRef.current) {
         return;
       }
@@ -129,6 +144,11 @@ export default function App() {
       el.autoplay = true;
       el.dataset.trackSid = publication.trackSid;
       audioContainerRef.current.appendChild(el);
+      try {
+        await el.play();
+      } catch {
+        // Autoplay may fail depending on browser policy.
+      }
     });
 
     room.on(RoomEvent.TrackUnsubscribed, (track) => {
@@ -163,6 +183,7 @@ export default function App() {
 
       await room.connect(url, token, { autoSubscribe: true });
       await room.localParticipant.setMicrophoneEnabled(true);
+      await requestAgentDispatch();
 
       roomRef.current = room;
     } catch (error) {

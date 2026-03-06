@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Room, RoomEvent } from 'livekit-client';
+import { Room, RoomEvent, Track } from 'livekit-client';
 
 const DEFAULT_API_BASE =
   typeof window !== 'undefined' && window.location.hostname === 'localhost'
@@ -34,6 +34,7 @@ export default function App() {
 
   const roomRef = useRef(null);
   const toastTimerRef = useRef(null);
+  const audioContainerRef = useRef(null);
 
   useEffect(() => {
     const updateClock = () => {
@@ -103,6 +104,9 @@ export default function App() {
       setSessionState('idle');
       setLiveMode('listening');
       setStatusText(IDLE_STATUS);
+      if (audioContainerRef.current) {
+        audioContainerRef.current.innerHTML = '';
+      }
     });
 
     room.on(RoomEvent.ConnectionStateChanged, (state) => {
@@ -114,6 +118,25 @@ export default function App() {
         setSessionState('idle');
         setStatusText(IDLE_STATUS);
       }
+    });
+
+    room.on(RoomEvent.TrackSubscribed, (track, publication) => {
+      if (track.kind !== Track.Kind.Audio || !audioContainerRef.current) {
+        return;
+      }
+
+      const el = track.attach();
+      el.autoplay = true;
+      el.dataset.trackSid = publication.trackSid;
+      audioContainerRef.current.appendChild(el);
+    });
+
+    room.on(RoomEvent.TrackUnsubscribed, (track) => {
+      if (track.kind !== Track.Kind.Audio) {
+        return;
+      }
+
+      track.detach().forEach((el) => el.remove());
     });
 
     room.on(RoomEvent.DataReceived, (payload) => {
@@ -165,6 +188,9 @@ export default function App() {
       setSessionState('idle');
       setLiveMode('listening');
       setStatusText(IDLE_STATUS);
+      if (audioContainerRef.current) {
+        audioContainerRef.current.innerHTML = '';
+      }
     }
   }
 
@@ -186,6 +212,7 @@ export default function App() {
       <div id="scan" />
       <div id="glow" className={isLive ? 'live' : ''} />
       <div id="toast" className={isToastVisible ? 'show' : ''}>{toast}</div>
+      <div ref={audioContainerRef} aria-hidden="true" style={{ display: 'none' }} />
 
       <div id="app">
         <header>
@@ -262,4 +289,3 @@ export default function App() {
     </>
   );
 }
-

@@ -1,7 +1,7 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, AgentDispatchClient } from 'livekit-server-sdk';
 
 dotenv.config();
 
@@ -13,10 +13,13 @@ const apiKey = process.env.LIVEKIT_API_KEY;
 const apiSecret = process.env.LIVEKIT_API_SECRET;
 const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL;
 const voiceServiceUrl = process.env.VOICE_SERVICE_URL;
+const agentName = process.env.AGENT_NAME || 'jarvis-agent';
 
 if (!livekitUrl || !apiKey || !apiSecret) {
   console.error('Missing LIVEKIT_URL, LIVEKIT_API_KEY, or LIVEKIT_API_SECRET in environment.');
 }
+
+const dispatchClient = new AgentDispatchClient(livekitUrl, apiKey, apiSecret);
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -44,6 +47,22 @@ app.post('/api/livekit/token', async (req, res) => {
       canSubscribe: true,
       canPublishData: true,
     });
+
+    try {
+      const existing = await dispatchClient.listDispatch(roomName);
+      const alreadyDispatched = Array.isArray(existing)
+        && existing.some((dispatch) => dispatch?.agentName === agentName);
+
+      if (!alreadyDispatched) {
+        await dispatchClient.createDispatch(roomName, agentName, {
+          metadata: JSON.stringify({ source: 'web-token-endpoint', participantName }),
+        });
+      }
+    } catch (dispatchError) {
+      return res.status(500).json({
+        error: `Agent dispatch failed: ${dispatchError?.message ?? String(dispatchError)}`,
+      });
+    }
 
     res.json({
       token: await at.toJwt(),

@@ -1,7 +1,7 @@
-﻿import json
+﻿import asyncio
+import json
 import os
 import tempfile
-import asyncio
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +16,21 @@ load_dotenv()
 
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
 N8N_RESPONSE_FIELD = os.getenv('N8N_RESPONSE_FIELD', 'output').strip() or 'output'
+
+
+# Keep models configurable for STT/LLM pipeline, but voice output is custom-only via VOICE_SERVICE_URL.
+STT_MODEL = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3:multi')
+LLM_MODEL = os.getenv('FREE_LLM_MODEL', 'openai/gpt-4o-mini')
+SESSION_TTS_MODEL = os.getenv('FREE_TTS_MODEL', 'cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc')
+
+VOICE_SERVICE_URL = os.getenv('VOICE_SERVICE_URL', '').strip().rstrip('/')
+CUSTOM_VOICE_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es').strip() or 'es'
+VOICE_SERVICE_TIMEOUT = int(os.getenv('VOICE_SERVICE_TIMEOUT', '20'))
+VOICE_READY_TIMEOUT = int(os.getenv('VOICE_READY_TIMEOUT', '120'))
+VOICE_READY_POLL_SECONDS = float(os.getenv('VOICE_READY_POLL_SECONDS', '2'))
+
+USER_NAME = os.getenv('JARVIS_USER_NAME', 'Isaac')
+USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
 
 
 def _load_system_prompt() -> str:
@@ -39,24 +54,6 @@ def _load_system_prompt() -> str:
 
 
 SYSTEM_PROMPT = _load_system_prompt()
-
-VOICE_MODE = os.getenv('VOICE_MODE', 'free').strip().lower()
-
-FREE_STT_MODEL = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3:multi')
-FREE_LLM_MODEL = os.getenv('FREE_LLM_MODEL', 'openai/gpt-4o-mini')
-FREE_TTS_MODEL = os.getenv('FREE_TTS_MODEL', 'cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc')
-
-MINIMAX_STT_MODEL = os.getenv('MINIMAX_STT_MODEL', 'deepgram/nova-3:multi')
-MINIMAX_LLM_MODEL = os.getenv('MINIMAX_LLM_MODEL', 'openai/gpt-4o-mini')
-MINIMAX_TTS_MODEL = os.getenv('MINIMAX_TTS_MODEL', 'speech-2.8-hd')
-
-VOICE_SERVICE_URL = os.getenv('VOICE_SERVICE_URL', '').strip().rstrip('/')
-CUSTOM_VOICE_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es').strip() or 'es'
-CUSTOM_VOICE_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
-VOICE_SERVICE_TIMEOUT = int(os.getenv('VOICE_SERVICE_TIMEOUT', '20'))
-
-USER_NAME = os.getenv('JARVIS_USER_NAME', 'Isaac')
-USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
 
 
 def _read_identity(context: RunContext) -> str | None:
@@ -85,7 +82,7 @@ def _normalize_text(text: str) -> str:
 def _classify_query(query: str) -> str:
     q = query.lower()
 
-    if any(k in q for k in ('agenda', 'calendario', 'plan', 'programa', 'horario', 'reunion', 'reunion')):
+    if any(k in q for k in ('agenda', 'calendario', 'plan', 'programa', 'horario', 'reunion')):
         return 'planning'
     if any(k in q for k in ('email', 'correo', 'mail', 'gmail', 'enviarle', 'escribile', 'escribele')):
         return 'email'
@@ -95,7 +92,7 @@ def _classify_query(query: str) -> str:
         return 'data'
     if any(k in q for k in ('investiga', 'buscar', 'busca', 'compara', 'resumen', 'research')):
         return 'research'
-    if any(k in q for k in ('error', 'falla', 'debug', 'bug', 'trace', 'log', 'diagnostico', 'diagnostico')):
+    if any(k in q for k in ('error', 'falla', 'debug', 'bug', 'trace', 'log', 'diagnostico')):
         return 'debug'
     return 'other'
 
@@ -107,7 +104,7 @@ def _risk_for_query(query: str) -> tuple[bool, str]:
         return True, 'send_email'
     if any(k in q for k in ('elimina', 'borrar', 'borra', 'delete', 'sobrescribe', 'reemplaza')):
         return True, 'data_deletion'
-    if any(k in q for k in ('pagar', 'compra', 'comprar', 'transferir', 'suscribir', 'suscripcion', 'suscripcion')):
+    if any(k in q for k in ('pagar', 'compra', 'comprar', 'transferir', 'suscribir', 'suscripcion')):
         return True, 'financial_action'
     if any(k in q for k in ('masivo', 'en lote', 'bulk', 'todos los', 'todas las')):
         return True, 'mass_operation'
@@ -170,6 +167,33 @@ async def post_to_n8n(payload: dict) -> dict:
             }
 
 
+async def wait_for_voice_ready() -> None:
+    if not VOICE_SERVICE_URL:
+        raise RuntimeError('VOICE_SERVICE_URL is not configured for custom voice synthesis')
+
+    deadline = time.monotonic() + max(1, VOICE_READY_TIMEOUT)
+    last_error = 'voice service did not become ready'
+
+    while time.monotonic() < deadline:
+        timeout = aiohttp.ClientTimeout(total=8)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f'{VOICE_SERVICE_URL}/health') as response:
+                    if 200 <= response.status < 300:
+                        payload = await response.json()
+                        if payload.get('ok'):
+                            return
+                        last_error = payload.get('error') or 'voice service reported not ready'
+                    else:
+                        last_error = f'health status {response.status}'
+        except Exception as exc:
+            last_error = str(exc)
+
+        await asyncio.sleep(max(0.5, VOICE_READY_POLL_SECONDS))
+
+    raise RuntimeError(f'custom voice service not ready: {last_error}')
+
+
 async def synthesize_custom_voice(text: str) -> str:
     if not VOICE_SERVICE_URL:
         raise RuntimeError('VOICE_SERVICE_URL is not configured for custom voice synthesis')
@@ -207,16 +231,6 @@ async def synthesize_custom_voice(text: str) -> str:
 
                 raise RuntimeError(f'custom voice synthesis failed: {response.status} {detail}')
 
-async def _single_text_stream(content: str):
-    yield content
-
-
-def resolve_models() -> tuple[str, str, str]:
-    if VOICE_MODE == 'minimax':
-        return (MINIMAX_STT_MODEL, MINIMAX_LLM_MODEL, MINIMAX_TTS_MODEL)
-
-    return (FREE_STT_MODEL, FREE_LLM_MODEL, FREE_TTS_MODEL)
-
 
 class JarvisAgent(Agent):
     def __init__(self) -> None:
@@ -232,22 +246,13 @@ class JarvisAgent(Agent):
         if not content:
             return
 
-        if not VOICE_SERVICE_URL:
-            async for frame in Agent.default.tts_node(self, _single_text_stream(content), model_settings):
-                yield frame
-            return
-
         tmp_path: str | None = None
         try:
             tmp_path = await synthesize_custom_voice(content)
             async for frame in audio_frames_from_file(tmp_path):
                 yield frame
-            return
-        except Exception:
-            # Keep conversation audible if custom voice service is warming up/unavailable.
-            async for frame in Agent.default.tts_node(self, _single_text_stream(content), model_settings):
-                yield frame
-            return
+        except Exception as exc:
+            raise RuntimeError(f'custom voice only mode failed: {exc}') from exc
         finally:
             if tmp_path:
                 try:
@@ -257,9 +262,9 @@ class JarvisAgent(Agent):
 
     @function_tool()
     async def route_to_n8n(self, context: RunContext, user_request: str) -> str:
-        query = _normalize_text(user_request)
-        category = _classify_query(query)
-        requires_approval, risk_reason = _risk_for_query(query)
+        query = user_request if isinstance(user_request, str) else ''
+        category = _classify_query(_normalize_text(query))
+        requires_approval, risk_reason = _risk_for_query(_normalize_text(query))
 
         payload = {
             'user': {
@@ -291,14 +296,13 @@ class JarvisAgent(Agent):
 
 
 async def entrypoint(ctx: JobContext) -> None:
+    await wait_for_voice_ready()
     await ctx.connect()
 
-    stt_model, llm_model, tts_model = resolve_models()
-
     session = AgentSession(
-        stt=stt_model,
-        llm=llm_model,
-        tts=tts_model,
+        stt=STT_MODEL,
+        llm=LLM_MODEL,
+        tts=SESSION_TTS_MODEL,
     )
 
     agent = JarvisAgent()

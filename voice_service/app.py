@@ -1,149 +1,198 @@
-import os
+﻿import os
 import tempfile
-import uuid
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock
 
 import requests
+import torch
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from TTS.api import TTS
 
-app = FastAPI(title='jarvis-voice-service')
+
+@dataclass
+class VoiceConfig:
+    model_name: str
+    language: str
+    bundled_wav_path: str
+    custom_wav_url: str
+    custom_wav_path: str
+    warmup_text: str
+
+
+class CustomVoiceEngine:
+    def __init__(self, config: VoiceConfig) -> None:
+        self.config = config
+        self._tts: TTS | None = None
+        self._speaker_wav_path: str | None = None
+        self._ready = False
+        self._error = ''
+        self._startup_ms = 0
+        self._synth_lock = Lock()
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+    @property
+    def startup_ms(self) -> int:
+        return self._startup_ms
+
+    def startup(self) -> None:
+        start = time.monotonic()
+        self._apply_runtime_tuning()
+
+        try:
+            self._speaker_wav_path = self._resolve_speaker_wav()
+            self._tts = TTS(self.config.model_name)
+            self._prime_model()
+            self._ready = True
+            self._error = ''
+        except Exception as exc:
+            self._ready = False
+            self._error = str(exc)
+            raise
+        finally:
+            self._startup_ms = int((time.monotonic() - start) * 1000)
+
+    def synthesize(self, text: str, language: str | None = None) -> bytes:
+        if not self._ready or self._tts is None or self._speaker_wav_path is None:
+            raise RuntimeError('voice engine is not ready')
+
+        if text is None:
+            raise ValueError('text is required')
+
+        # Preserve user text content while rejecting empty requests.
+        if text.strip() == '':
+            raise ValueError('text is required')
+
+        with self._synth_lock:
+            out_fd, out_path = tempfile.mkstemp(prefix='jarvis_', suffix='.wav')
+            os.close(out_fd)
+            try:
+                with torch.inference_mode():
+                    self._tts.tts_to_file(
+                        text=text,
+                        speaker_wav=self._speaker_wav_path,
+                        language=(language or self.config.language),
+                        file_path=out_path,
+                    )
+                with open(out_path, 'rb') as f:
+                    return f.read()
+            finally:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+
+    def _prime_model(self) -> None:
+        assert self._tts is not None
+        assert self._speaker_wav_path is not None
+
+        out_fd, out_path = tempfile.mkstemp(prefix='jarvis_prime_', suffix='.wav')
+        os.close(out_fd)
+        try:
+            with torch.inference_mode():
+                self._tts.tts_to_file(
+                    text=self.config.warmup_text,
+                    speaker_wav=self._speaker_wav_path,
+                    language=self.config.language,
+                    file_path=out_path,
+                )
+        finally:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+
+    def _resolve_speaker_wav(self) -> str:
+        bundled = self.config.bundled_wav_path
+        if os.path.exists(bundled) and os.path.getsize(bundled) > 0:
+            return bundled
+
+        custom_url = self.config.custom_wav_url.strip()
+        if not custom_url:
+            raise RuntimeError('No custom voice WAV available. Provide voice_service/custom_voice.wav or CUSTOM_VOICE_WAV_URL')
+
+        try:
+            response = requests.get(custom_url, timeout=60)
+            response.raise_for_status()
+        except Exception as exc:
+            raise RuntimeError(f'Failed to download custom voice WAV: {exc}') from exc
+
+        target = self.config.custom_wav_path
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        with open(target, 'wb') as f:
+            f.write(response.content)
+
+        if os.path.getsize(target) == 0:
+            raise RuntimeError('Downloaded custom voice WAV is empty')
+
+        return target
+
+    def _apply_runtime_tuning(self) -> None:
+        # CPU-focused tuning so a larger Railway machine stays predictable under load.
+        num_threads = int(os.getenv('TORCH_NUM_THREADS', '6'))
+        num_interop_threads = int(os.getenv('TORCH_INTEROP_THREADS', '2'))
+        torch.set_num_threads(max(1, num_threads))
+        torch.set_num_interop_threads(max(1, num_interop_threads))
+
+
+class SynthesizeRequest(BaseModel):
+    text: str
+    language: str | None = None
+
 
 MODEL_NAME = os.getenv('XTTS_MODEL', 'tts_models/multilingual/multi-dataset/xtts_v2')
 DEFAULT_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es')
 DEFAULT_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
 DEFAULT_WAV_PATH = os.getenv('CUSTOM_VOICE_WAV_PATH', '/tmp/custom_voice.wav')
 BUNDLED_WAV_PATH = str(Path(__file__).with_name('custom_voice.wav'))
+WARMUP_TEXT = os.getenv('WARMUP_TEXT', 'Bienvenido señor, ¿qué haremos hoy?')
 
-_tts = None
-_tts_lock = Lock()
-_wav_lock = Lock()
-_cached_wav_url = None
+engine = CustomVoiceEngine(
+    VoiceConfig(
+        model_name=MODEL_NAME,
+        language=DEFAULT_LANG,
+        bundled_wav_path=BUNDLED_WAV_PATH,
+        custom_wav_url=DEFAULT_WAV_URL,
+        custom_wav_path=DEFAULT_WAV_PATH,
+        warmup_text=WARMUP_TEXT,
+    )
+)
 
-_warmup_lock = Lock()
-_warmup_started = False
-_warmup_ready = False
-_warmup_error = ''
-
-
-class SynthesizeRequest(BaseModel):
-    text: str
-    language: str | None = None
-    speaker_wav_url: str | None = None
-
-
-def get_tts() -> TTS:
-    global _tts
-    if _tts is None:
-        with _tts_lock:
-            if _tts is None:
-                _tts = TTS(MODEL_NAME)
-    return _tts
-
-
-def _resolve_local_reference_wav() -> str | None:
-    if os.path.exists(BUNDLED_WAV_PATH) and os.path.getsize(BUNDLED_WAV_PATH) > 0:
-        return BUNDLED_WAV_PATH
-    if os.path.exists(DEFAULT_WAV_PATH) and os.path.getsize(DEFAULT_WAV_PATH) > 0:
-        return DEFAULT_WAV_PATH
-    return None
-
-
-def ensure_reference_wav(custom_url: str | None) -> str:
-    global _cached_wav_url
-
-    # Prefer bundled/custom local WAV to avoid runtime network dependency.
-    local_wav = _resolve_local_reference_wav()
-    if local_wav and not (custom_url or '').strip():
-        return local_wav
-
-    url = (custom_url or DEFAULT_WAV_URL).strip()
-    if not url:
-        if local_wav:
-            return local_wav
-        raise HTTPException(status_code=400, detail='No speaker reference wav configured')
-
-    with _wav_lock:
-        if os.path.exists(DEFAULT_WAV_PATH) and _cached_wav_url == url and os.path.getsize(DEFAULT_WAV_PATH) > 0:
-            return DEFAULT_WAV_PATH
-
-        try:
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-        except Exception as exc:
-            if local_wav:
-                return local_wav
-            raise HTTPException(status_code=400, detail=f'Failed to fetch speaker wav: {exc}') from exc
-
-        with open(DEFAULT_WAV_PATH, 'wb') as f:
-            f.write(response.content)
-
-        _cached_wav_url = url
-        return DEFAULT_WAV_PATH
-
-
-def _run_warmup() -> None:
-    global _warmup_started, _warmup_ready, _warmup_error
-    try:
-        get_tts()
-        ensure_reference_wav(None)
-        _warmup_ready = True
-        _warmup_error = ''
-    except Exception as exc:
-        _warmup_error = str(exc)
-    finally:
-        _warmup_started = False
-
-
-def trigger_warmup() -> None:
-    global _warmup_started
-    with _warmup_lock:
-        if _warmup_started or _warmup_ready:
-            return
-        _warmup_started = True
-        Thread(target=_run_warmup, daemon=True).start()
+app = FastAPI(title='jarvis-voice-service')
 
 
 @app.on_event('startup')
 def on_startup() -> None:
-    trigger_warmup()
+    engine.startup()
 
 
 @app.get('/health')
 def health() -> dict:
     return {
-        'ok': True,
-        'warmup_ready': _warmup_ready,
-        'warmup_started': _warmup_started,
-        'warmup_error': _warmup_error,
+        'ok': engine.ready,
+        'model': MODEL_NAME,
+        'language': DEFAULT_LANG,
+        'startup_ms': engine.startup_ms,
+        'error': engine.error,
     }
 
 
 @app.post('/synthesize')
 def synthesize(req: SynthesizeRequest):
-    text = req.text.strip()
-    if not text:
-        raise HTTPException(status_code=400, detail='Text is required')
-
-    if not _warmup_ready:
-        trigger_warmup()
-        raise HTTPException(status_code=503, detail='Voice model warming up, retry shortly')
-
-    ref_wav = ensure_reference_wav(req.speaker_wav_url)
-    out_path = os.path.join(tempfile.gettempdir(), f'jarvis_{uuid.uuid4().hex}.wav')
+    if not engine.ready:
+        raise HTTPException(status_code=503, detail='Voice engine is not ready')
 
     try:
-        tts = get_tts()
-        tts.tts_to_file(
-            text=text,
-            speaker_wav=ref_wav,
-            language=(req.language or DEFAULT_LANG),
-            file_path=out_path,
-        )
+        wav_bytes = engine.synthesize(req.text, req.language or DEFAULT_LANG)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'TTS synthesis failed: {exc}') from exc
 
-    return FileResponse(out_path, media_type='audio/wav', filename='jarvis.wav')
+    return Response(content=wav_bytes, media_type='audio/wav')

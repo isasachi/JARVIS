@@ -82,14 +82,6 @@ app.post('/api/livekit/token', async (req, res) => {
       }
     }
 
-    try {
-      await ensureAgentDispatch(roomName, participantName);
-    } catch (dispatchError) {
-      return res.status(500).json({
-        error: `Agent dispatch failed: ${dispatchError?.message ?? String(dispatchError)}`,
-      });
-    }
-
     res.json({
       token: await at.toJwt(),
       url: livekitUrl,

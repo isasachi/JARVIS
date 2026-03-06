@@ -53,7 +53,7 @@ MINIMAX_TTS_MODEL = os.getenv('MINIMAX_TTS_MODEL', 'speech-2.8-hd')
 VOICE_SERVICE_URL = os.getenv('VOICE_SERVICE_URL', '').strip().rstrip('/')
 CUSTOM_VOICE_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es').strip() or 'es'
 CUSTOM_VOICE_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
-VOICE_SERVICE_TIMEOUT = int(os.getenv('VOICE_SERVICE_TIMEOUT', '180'))
+VOICE_SERVICE_TIMEOUT = int(os.getenv('VOICE_SERVICE_TIMEOUT', '20'))
 
 USER_NAME = os.getenv('JARVIS_USER_NAME', 'Isaac')
 USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
@@ -184,7 +184,9 @@ async def synthesize_custom_voice(text: str) -> str:
 
     while True:
         attempt += 1
-        request_timeout = aiohttp.ClientTimeout(total=min(90, max(20, int(deadline - time.monotonic()))))
+        remaining = max(1, int(deadline - time.monotonic()))
+        request_timeout = aiohttp.ClientTimeout(total=min(12, remaining))
+
         async with aiohttp.ClientSession(timeout=request_timeout) as session:
             async with session.post(f'{VOICE_SERVICE_URL}/synthesize', json=payload) as response:
                 if 200 <= response.status < 300:
@@ -198,12 +200,12 @@ async def synthesize_custom_voice(text: str) -> str:
 
                 detail = await response.text()
                 transient = response.status in (502, 503, 504)
-                if transient and time.monotonic() < deadline:
-                    await asyncio.sleep(min(12, 2 + attempt * 2))
+                can_retry = transient and time.monotonic() < deadline and attempt < 2
+                if can_retry:
+                    await asyncio.sleep(2)
                     continue
 
                 raise RuntimeError(f'custom voice synthesis failed: {response.status} {detail}')
-
 
 async def _single_text_stream(content: str):
     yield content

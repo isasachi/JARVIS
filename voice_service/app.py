@@ -1,6 +1,7 @@
 import os
 import tempfile
 import uuid
+from threading import Lock
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -15,13 +16,23 @@ DEFAULT_LANG = os.getenv('CUSTOM_VOICE_LANG', 'en')
 DEFAULT_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
 DEFAULT_WAV_PATH = os.getenv('CUSTOM_VOICE_WAV_PATH', '/tmp/custom_voice.wav')
 
-_tts = TTS(MODEL_NAME)
+_tts = None
+_tts_lock = Lock()
 
 
 class SynthesizeRequest(BaseModel):
     text: str
     language: str | None = None
     speaker_wav_url: str | None = None
+
+
+def get_tts() -> TTS:
+    global _tts
+    if _tts is None:
+        with _tts_lock:
+            if _tts is None:
+                _tts = TTS(MODEL_NAME)
+    return _tts
 
 
 def ensure_reference_wav(custom_url: str | None) -> str:
@@ -57,7 +68,8 @@ def synthesize(req: SynthesizeRequest):
     out_path = os.path.join(tempfile.gettempdir(), f'jarvis_{uuid.uuid4().hex}.wav')
 
     try:
-        _tts.tts_to_file(
+        tts = get_tts()
+        tts.tts_to_file(
             text=req.text,
             speaker_wav=ref_wav,
             language=(req.language or DEFAULT_LANG),

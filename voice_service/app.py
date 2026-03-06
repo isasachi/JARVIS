@@ -1,7 +1,7 @@
 import os
 import tempfile
 import uuid
-from threading import Lock
+from threading import Lock, Thread
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -20,6 +20,11 @@ _tts = None
 _tts_lock = Lock()
 _wav_lock = Lock()
 _cached_wav_url = None
+
+_warmup_lock = Lock()
+_warmup_started = False
+_warmup_ready = False
+_warmup_error = ''
 
 
 class SynthesizeRequest(BaseModel):
@@ -63,9 +68,42 @@ def ensure_reference_wav(custom_url: str | None) -> str:
         return DEFAULT_WAV_PATH
 
 
+def _run_warmup() -> None:
+    global _warmup_started, _warmup_ready, _warmup_error
+    try:
+        get_tts()
+        if DEFAULT_WAV_URL:
+            ensure_reference_wav(None)
+        _warmup_ready = True
+        _warmup_error = ''
+    except Exception as exc:
+        _warmup_error = str(exc)
+    finally:
+        _warmup_started = False
+
+
+def trigger_warmup() -> None:
+    global _warmup_started
+    with _warmup_lock:
+        if _warmup_started or _warmup_ready:
+            return
+        _warmup_started = True
+        Thread(target=_run_warmup, daemon=True).start()
+
+
+@app.on_event('startup')
+def on_startup() -> None:
+    trigger_warmup()
+
+
 @app.get('/health')
 def health() -> dict:
-    return {'ok': True}
+    return {
+        'ok': True,
+        'warmup_ready': _warmup_ready,
+        'warmup_started': _warmup_started,
+        'warmup_error': _warmup_error,
+    }
 
 
 @app.post('/synthesize')
@@ -73,6 +111,10 @@ def synthesize(req: SynthesizeRequest):
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail='Text is required')
+
+    if not _warmup_ready:
+        trigger_warmup()
+        raise HTTPException(status_code=503, detail='Voice model warming up, retry shortly')
 
     ref_wav = ensure_reference_wav(req.speaker_wav_url)
     out_path = os.path.join(tempfile.gettempdir(), f'jarvis_{uuid.uuid4().hex}.wav')

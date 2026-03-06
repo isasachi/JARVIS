@@ -1,6 +1,8 @@
 ﻿import json
 import os
 import tempfile
+import asyncio
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterable
@@ -51,7 +53,7 @@ MINIMAX_TTS_MODEL = os.getenv('MINIMAX_TTS_MODEL', 'speech-2.8-hd')
 VOICE_SERVICE_URL = os.getenv('VOICE_SERVICE_URL', '').strip().rstrip('/')
 CUSTOM_VOICE_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es').strip() or 'es'
 CUSTOM_VOICE_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
-VOICE_SERVICE_TIMEOUT = int(os.getenv('VOICE_SERVICE_TIMEOUT', '60'))
+VOICE_SERVICE_TIMEOUT = int(os.getenv('VOICE_SERVICE_TIMEOUT', '180'))
 
 USER_NAME = os.getenv('JARVIS_USER_NAME', 'Isaac')
 USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
@@ -83,9 +85,9 @@ def _normalize_text(text: str) -> str:
 def _classify_query(query: str) -> str:
     q = query.lower()
 
-    if any(k in q for k in ('agenda', 'calendario', 'plan', 'programa', 'horario', 'reunion', 'reunión')):
+    if any(k in q for k in ('agenda', 'calendario', 'plan', 'programa', 'horario', 'reunion', 'reunion')):
         return 'planning'
-    if any(k in q for k in ('email', 'correo', 'mail', 'gmail', 'enviarle', 'escribile', 'escríbele')):
+    if any(k in q for k in ('email', 'correo', 'mail', 'gmail', 'enviarle', 'escribile', 'escribele')):
         return 'email'
     if any(k in q for k in ('tarea', 'recordatorio', 'pendiente', 'to-do', 'todo')):
         return 'tasks'
@@ -93,7 +95,7 @@ def _classify_query(query: str) -> str:
         return 'data'
     if any(k in q for k in ('investiga', 'buscar', 'busca', 'compara', 'resumen', 'research')):
         return 'research'
-    if any(k in q for k in ('error', 'falla', 'debug', 'bug', 'trace', 'log', 'diagnostico', 'diagnóstico')):
+    if any(k in q for k in ('error', 'falla', 'debug', 'bug', 'trace', 'log', 'diagnostico', 'diagnostico')):
         return 'debug'
     return 'other'
 
@@ -105,7 +107,7 @@ def _risk_for_query(query: str) -> tuple[bool, str]:
         return True, 'send_email'
     if any(k in q for k in ('elimina', 'borrar', 'borra', 'delete', 'sobrescribe', 'reemplaza')):
         return True, 'data_deletion'
-    if any(k in q for k in ('pagar', 'compra', 'comprar', 'transferir', 'suscribir', 'suscripcion', 'suscripción')):
+    if any(k in q for k in ('pagar', 'compra', 'comprar', 'transferir', 'suscribir', 'suscripcion', 'suscripcion')):
         return True, 'financial_action'
     if any(k in q for k in ('masivo', 'en lote', 'bulk', 'todos los', 'todas las')):
         return True, 'mass_operation'
@@ -180,21 +182,30 @@ async def synthesize_custom_voice(text: str) -> str:
     if CUSTOM_VOICE_WAV_URL:
         payload['speaker_wav_url'] = CUSTOM_VOICE_WAV_URL
 
-    timeout = aiohttp.ClientTimeout(total=VOICE_SERVICE_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(f'{VOICE_SERVICE_URL}/synthesize', json=payload) as response:
-            if response.status < 200 or response.status >= 300:
+    deadline = time.monotonic() + VOICE_SERVICE_TIMEOUT
+    attempt = 0
+
+    while True:
+        attempt += 1
+        request_timeout = aiohttp.ClientTimeout(total=min(90, max(20, int(deadline - time.monotonic()))))
+        async with aiohttp.ClientSession(timeout=request_timeout) as session:
+            async with session.post(f'{VOICE_SERVICE_URL}/synthesize', json=payload) as response:
+                if 200 <= response.status < 300:
+                    audio_bytes = await response.read()
+                    tmp_file = tempfile.NamedTemporaryFile(prefix='jarvis_tts_', suffix='.wav', delete=False)
+                    tmp_file.write(audio_bytes)
+                    tmp_file.flush()
+                    tmp_path = tmp_file.name
+                    tmp_file.close()
+                    return tmp_path
+
                 detail = await response.text()
+                transient = response.status in (502, 503, 504)
+                if transient and time.monotonic() < deadline:
+                    await asyncio.sleep(min(12, 2 + attempt * 2))
+                    continue
+
                 raise RuntimeError(f'custom voice synthesis failed: {response.status} {detail}')
-
-            audio_bytes = await response.read()
-
-    tmp_file = tempfile.NamedTemporaryFile(prefix='jarvis_tts_', suffix='.wav', delete=False)
-    tmp_file.write(audio_bytes)
-    tmp_file.flush()
-    tmp_path = tmp_file.name
-    tmp_file.close()
-    return tmp_path
 
 
 async def _single_text_stream(content: str):
@@ -241,12 +252,6 @@ class JarvisAgent(Agent):
 
     @function_tool()
     async def route_to_n8n(self, context: RunContext, user_request: str) -> str:
-        """Send user intent to n8n for orchestration and return response text.
-
-        Args:
-            user_request: The user task in plain language. Must preserve original user message.
-        """
-
         query = _normalize_text(user_request)
         category = _classify_query(query)
         requires_approval, risk_reason = _risk_for_query(query)

@@ -1,0 +1,37 @@
+version: '3.9'
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - '8080:80'
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - '8787:8787'
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      - api
+
+  voice:
+    build:
+      context: .
+      dockerfile: voice_service/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - '8000:8000'

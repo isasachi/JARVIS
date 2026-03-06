@@ -1,0 +1,68 @@
+services:
+  - type: web
+    name: jarvis-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile.web
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_BASE
+        value: https://jarvis-api.up.railway.app
+      - key: VITE_LIVEKIT_ROOM
+        value: jarvis-room
+      - key: VITE_VOICE_LABEL
+        value: FREE CUSTOM VOICE ?
+
+  - type: web
+    name: jarvis-api
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8787
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: N8N_WEBHOOK_URL
+        sync: false
+
+  - type: web
+    name: jarvis-voice
+    runtime: docker
+    dockerfilePath: ./voice_service/Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: XTTS_MODEL
+        value: tts_models/multilingual/multi-dataset/xtts_v2
+      - key: CUSTOM_VOICE_LANG
+        value: en
+      - key: CUSTOM_VOICE_WAV_URL
+        sync: false
+
+  - type: worker
+    name: jarvis-agent
+    runtime: docker
+    dockerfilePath: ./agent/Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: N8N_WEBHOOK_URL
+        sync: false
+      - key: N8N_RESPONSE_FIELD
+        value: output
+      - key: VOICE_MODE
+        value: free
+      - key: FREE_STT_MODEL
+        value: local/whisper
+      - key: FREE_LLM_MODEL
+        value: openai/gpt-4.1-mini
+      - key: FREE_TTS_MODEL
+        value: local/xtts

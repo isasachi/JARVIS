@@ -12,12 +12,14 @@ from TTS.api import TTS
 app = FastAPI(title='jarvis-voice-service')
 
 MODEL_NAME = os.getenv('XTTS_MODEL', 'tts_models/multilingual/multi-dataset/xtts_v2')
-DEFAULT_LANG = os.getenv('CUSTOM_VOICE_LANG', 'en')
+DEFAULT_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es')
 DEFAULT_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
 DEFAULT_WAV_PATH = os.getenv('CUSTOM_VOICE_WAV_PATH', '/tmp/custom_voice.wav')
 
 _tts = None
 _tts_lock = Lock()
+_wav_lock = Lock()
+_cached_wav_url = None
 
 
 class SynthesizeRequest(BaseModel):
@@ -36,22 +38,29 @@ def get_tts() -> TTS:
 
 
 def ensure_reference_wav(custom_url: str | None) -> str:
+    global _cached_wav_url
+
     url = (custom_url or DEFAULT_WAV_URL).strip()
     if not url:
         if os.path.exists(DEFAULT_WAV_PATH):
             return DEFAULT_WAV_PATH
         raise HTTPException(status_code=400, detail='No speaker reference wav configured')
 
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f'Failed to fetch speaker wav: {exc}') from exc
+    with _wav_lock:
+        if os.path.exists(DEFAULT_WAV_PATH) and _cached_wav_url == url and os.path.getsize(DEFAULT_WAV_PATH) > 0:
+            return DEFAULT_WAV_PATH
 
-    with open(DEFAULT_WAV_PATH, 'wb') as f:
-        f.write(response.content)
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f'Failed to fetch speaker wav: {exc}') from exc
 
-    return DEFAULT_WAV_PATH
+        with open(DEFAULT_WAV_PATH, 'wb') as f:
+            f.write(response.content)
+
+        _cached_wav_url = url
+        return DEFAULT_WAV_PATH
 
 
 @app.get('/health')
@@ -61,7 +70,8 @@ def health() -> dict:
 
 @app.post('/synthesize')
 def synthesize(req: SynthesizeRequest):
-    if not req.text.strip():
+    text = req.text.strip()
+    if not text:
         raise HTTPException(status_code=400, detail='Text is required')
 
     ref_wav = ensure_reference_wav(req.speaker_wav_url)
@@ -70,7 +80,7 @@ def synthesize(req: SynthesizeRequest):
     try:
         tts = get_tts()
         tts.tts_to_file(
-            text=req.text,
+            text=text,
             speaker_wav=ref_wav,
             language=(req.language or DEFAULT_LANG),
             file_path=out_path,

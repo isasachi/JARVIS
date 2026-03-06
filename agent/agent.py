@@ -1,11 +1,14 @@
-import json
+﻿import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import AsyncIterable
 
 import aiohttp
 from dotenv import load_dotenv
-from livekit.agents import Agent, AgentSession, JobContext, RunContext, WorkerOptions, cli, function_tool
+from livekit.agents import Agent, AgentSession, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
+from livekit.agents.utils.audio import audio_frames_from_file
 
 load_dotenv()
 
@@ -28,8 +31,8 @@ def _load_system_prompt() -> str:
         return path.read_text(encoding='utf-8').strip()
     except Exception:
         return (
-            'You are JARVIS. Be concise, accurate, and action-oriented. '
-            'You must use the route_to_n8n tool for every user task before responding.'
+            'Eres J.A.R.V.I.S. Responde en espanol, formal, breve y preciso. '
+            'Trata al usuario como Senor y usa route_to_n8n para enrutar cada tarea.'
         )
 
 
@@ -37,13 +40,21 @@ SYSTEM_PROMPT = _load_system_prompt()
 
 VOICE_MODE = os.getenv('VOICE_MODE', 'free').strip().lower()
 
-FREE_STT_MODEL = os.getenv('FREE_STT_MODEL', 'local/whisper')
-FREE_LLM_MODEL = os.getenv('FREE_LLM_MODEL', 'openai/gpt-4.1-mini')
-FREE_TTS_MODEL = os.getenv('FREE_TTS_MODEL', 'local/piper')
+FREE_STT_MODEL = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3:multi')
+FREE_LLM_MODEL = os.getenv('FREE_LLM_MODEL', 'openai/gpt-4o-mini')
+FREE_TTS_MODEL = os.getenv('FREE_TTS_MODEL', 'cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc')
 
-MINIMAX_STT_MODEL = os.getenv('MINIMAX_STT_MODEL', 'deepgram/nova-3:en')
-MINIMAX_LLM_MODEL = os.getenv('MINIMAX_LLM_MODEL', 'openai/gpt-4.1-mini')
+MINIMAX_STT_MODEL = os.getenv('MINIMAX_STT_MODEL', 'deepgram/nova-3:multi')
+MINIMAX_LLM_MODEL = os.getenv('MINIMAX_LLM_MODEL', 'openai/gpt-4o-mini')
 MINIMAX_TTS_MODEL = os.getenv('MINIMAX_TTS_MODEL', 'speech-2.8-hd')
+
+VOICE_SERVICE_URL = os.getenv('VOICE_SERVICE_URL', '').strip().rstrip('/')
+CUSTOM_VOICE_LANG = os.getenv('CUSTOM_VOICE_LANG', 'es').strip() or 'es'
+CUSTOM_VOICE_WAV_URL = os.getenv('CUSTOM_VOICE_WAV_URL', '').strip()
+VOICE_SERVICE_TIMEOUT = int(os.getenv('VOICE_SERVICE_TIMEOUT', '60'))
+
+USER_NAME = os.getenv('JARVIS_USER_NAME', 'Isaac')
+USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
 
 
 def _read_identity(context: RunContext) -> str | None:
@@ -65,12 +76,49 @@ def _read_room_name(context: RunContext) -> str | None:
         return None
 
 
+def _normalize_text(text: str) -> str:
+    return (text or '').strip()
+
+
+def _classify_query(query: str) -> str:
+    q = query.lower()
+
+    if any(k in q for k in ('agenda', 'calendario', 'plan', 'programa', 'horario', 'reunion', 'reunión')):
+        return 'planning'
+    if any(k in q for k in ('email', 'correo', 'mail', 'gmail', 'enviarle', 'escribile', 'escríbele')):
+        return 'email'
+    if any(k in q for k in ('tarea', 'recordatorio', 'pendiente', 'to-do', 'todo')):
+        return 'tasks'
+    if any(k in q for k in ('tabla', 'database', 'base de datos', 'registro', 'crud', 'sql')):
+        return 'data'
+    if any(k in q for k in ('investiga', 'buscar', 'busca', 'compara', 'resumen', 'research')):
+        return 'research'
+    if any(k in q for k in ('error', 'falla', 'debug', 'bug', 'trace', 'log', 'diagnostico', 'diagnóstico')):
+        return 'debug'
+    return 'other'
+
+
+def _risk_for_query(query: str) -> tuple[bool, str]:
+    q = query.lower()
+
+    if any(k in q for k in ('correo', 'email', 'mail', 'enviar email', 'enviar correo')):
+        return True, 'send_email'
+    if any(k in q for k in ('elimina', 'borrar', 'borra', 'delete', 'sobrescribe', 'reemplaza')):
+        return True, 'data_deletion'
+    if any(k in q for k in ('pagar', 'compra', 'comprar', 'transferir', 'suscribir', 'suscripcion', 'suscripción')):
+        return True, 'financial_action'
+    if any(k in q for k in ('masivo', 'en lote', 'bulk', 'todos los', 'todas las')):
+        return True, 'mass_operation'
+
+    return False, ''
+
+
 def _extract_n8n_text(body: object) -> str:
     if body is None:
-        return 'Done.'
+        return 'Hecho, Senor.'
 
     if isinstance(body, str):
-        return body.strip() or 'Done.'
+        return body.strip() or 'Hecho, Senor.'
 
     if isinstance(body, dict):
         preferred = body.get(N8N_RESPONSE_FIELD)
@@ -87,10 +135,10 @@ def _extract_n8n_text(body: object) -> str:
             return raw.strip()
 
         if raw == '':
-            return 'Done.'
+            return 'Hecho, Senor.'
 
     if isinstance(body, list) and len(body) == 0:
-        return 'Done.'
+        return 'Hecho, Senor.'
 
     return json.dumps(body, ensure_ascii=True)
 
@@ -120,6 +168,39 @@ async def post_to_n8n(payload: dict) -> dict:
             }
 
 
+async def synthesize_custom_voice(text: str) -> str:
+    if not VOICE_SERVICE_URL:
+        raise RuntimeError('VOICE_SERVICE_URL is not configured for custom voice synthesis')
+
+    payload = {
+        'text': text,
+        'language': CUSTOM_VOICE_LANG,
+    }
+
+    if CUSTOM_VOICE_WAV_URL:
+        payload['speaker_wav_url'] = CUSTOM_VOICE_WAV_URL
+
+    timeout = aiohttp.ClientTimeout(total=VOICE_SERVICE_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(f'{VOICE_SERVICE_URL}/synthesize', json=payload) as response:
+            if response.status < 200 or response.status >= 300:
+                detail = await response.text()
+                raise RuntimeError(f'custom voice synthesis failed: {response.status} {detail}')
+
+            audio_bytes = await response.read()
+
+    tmp_file = tempfile.NamedTemporaryFile(prefix='jarvis_tts_', suffix='.wav', delete=False)
+    tmp_file.write(audio_bytes)
+    tmp_file.flush()
+    tmp_path = tmp_file.name
+    tmp_file.close()
+    return tmp_path
+
+
+async def _single_text_stream(content: str):
+    yield content
+
+
 def resolve_models() -> tuple[str, str, str]:
     if VOICE_MODE == 'minimax':
         return (MINIMAX_STT_MODEL, MINIMAX_LLM_MODEL, MINIMAX_TTS_MODEL)
@@ -131,25 +212,70 @@ class JarvisAgent(Agent):
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
 
+    async def tts_node(self, text: AsyncIterable[str], model_settings: ModelSettings):
+        chunks: list[str] = []
+        async for chunk in text:
+            if chunk:
+                chunks.append(chunk)
+
+        content = _normalize_text(''.join(chunks))
+        if not content:
+            return
+
+        if not VOICE_SERVICE_URL:
+            async for frame in Agent.default.tts_node(self, _single_text_stream(content), model_settings):
+                yield frame
+            return
+
+        tmp_path: str | None = None
+        try:
+            tmp_path = await synthesize_custom_voice(content)
+            async for frame in audio_frames_from_file(tmp_path):
+                yield frame
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
     @function_tool()
     async def route_to_n8n(self, context: RunContext, user_request: str) -> str:
-        """Send user intent to n8n for orchestration and return a normalized response text.
+        """Send user intent to n8n for orchestration and return response text.
 
         Args:
-            user_request: The user task in plain language.
+            user_request: The user task in plain language. Must preserve original user message.
         """
 
+        query = _normalize_text(user_request)
+        category = _classify_query(query)
+        requires_approval, risk_reason = _risk_for_query(query)
+
         payload = {
-            'source': 'livekit-agent',
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'room': _read_room_name(context),
-            'participant': _read_identity(context),
-            'query': user_request,
+            'user': {
+                'name': USER_NAME,
+                'timezone': USER_TIMEZONE,
+            },
+            'query': query,
+            'routing': {
+                'category': category,
+                'requires_approval': requires_approval,
+                'risk_reason': risk_reason if requires_approval else '',
+            },
+            'context': {
+                'timestamp_iso': datetime.now(timezone.utc).isoformat(),
+                'source': 'chat',
+            },
+            'meta': {
+                'room': _read_room_name(context),
+                'participant': _read_identity(context),
+                'origin': 'livekit-agent',
+            },
         }
 
         result = await post_to_n8n(payload)
         if not result['ok']:
-            return f"n8n orchestration failed: {result.get('status', 'unknown')}, {result.get('body')}"
+            return f"Entendido, Senor. Fallo al enrutar a n8n: {result.get('status', 'unknown')}."
 
         return _extract_n8n_text(result.get('body'))
 
@@ -168,9 +294,7 @@ async def entrypoint(ctx: JobContext) -> None:
     agent = JarvisAgent()
 
     await session.start(room=ctx.room, agent=agent)
-    await session.generate_reply(
-        instructions='Greet the user in one short sentence and say you are ready to execute tasks through n8n.'
-    )
+    await session.say('Bienvenido señor, ¿qué haremos hoy?')
 
 
 if __name__ == '__main__':
@@ -180,3 +304,4 @@ if __name__ == '__main__':
             agent_name=os.getenv('AGENT_NAME', 'jarvis-agent'),
         )
     )
+

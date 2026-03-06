@@ -6,11 +6,11 @@ services:
     autoDeploy: true
     envVars:
       - key: VITE_API_BASE
-        value: https://jarvis-api.up.railway.app
+        sync: false
       - key: VITE_LIVEKIT_ROOM
         value: jarvis-room
       - key: VITE_VOICE_LABEL
-        value: FREE CUSTOM VOICE ?
+        value: CUSTOM JARVIS VOICE
 
   - type: web
     name: jarvis-api
@@ -38,9 +38,11 @@ services:
       - key: XTTS_MODEL
         value: tts_models/multilingual/multi-dataset/xtts_v2
       - key: CUSTOM_VOICE_LANG
-        value: en
+        value: es
       - key: CUSTOM_VOICE_WAV_URL
         sync: false
+      - key: COQUI_TOS_AGREED
+        value: "1"
 
   - type: worker
     name: jarvis-agent
@@ -61,8 +63,16 @@ services:
       - key: VOICE_MODE
         value: free
       - key: FREE_STT_MODEL
-        value: local/whisper
+        value: deepgram/nova-3:multi
       - key: FREE_LLM_MODEL
-        value: openai/gpt-4.1-mini
+        value: openai/gpt-4o-mini
       - key: FREE_TTS_MODEL
-        value: local/xtts
+        value: cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc
+      - key: VOICE_SERVICE_URL
+        sync: false
+      - key: CUSTOM_VOICE_LANG
+        value: es
+      - key: CUSTOM_VOICE_WAV_URL
+        sync: false
+      - key: AGENT_SYSTEM_PROMPT_FILE
+        value: agent/system_prompt_es.md

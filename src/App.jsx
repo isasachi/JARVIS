@@ -27,14 +27,15 @@ export default function App() {
   const [clock, setClock] = useState('--:--:--');
   const [toast, setToast] = useState('');
   const [isToastVisible, setIsToastVisible] = useState(false);
-  const [sessionState, setSessionState] = useState('idle'); // idle | connecting | live
+  const [sessionState, setSessionState] = useState('idle');
   const [statusText, setStatusText] = useState(IDLE_STATUS);
-  const [liveMode, setLiveMode] = useState('listening'); // listening | speaking
+  const [liveMode, setLiveMode] = useState('listening');
   const [participantName] = useState(() => `user_${Math.random().toString(36).slice(2, 9)}`);
 
   const roomRef = useRef(null);
   const toastTimerRef = useRef(null);
   const audioContainerRef = useRef(null);
+  const activeAudioTrackSidRef = useRef(null);
 
   useEffect(() => {
     const updateClock = () => {
@@ -63,6 +64,13 @@ export default function App() {
     };
   }, []);
 
+  const clearAudioElements = () => {
+    if (audioContainerRef.current) {
+      audioContainerRef.current.innerHTML = '';
+    }
+    activeAudioTrackSidRef.current = null;
+  };
+
   const showToast = (message) => {
     setToast(message);
     setIsToastVisible(true);
@@ -76,7 +84,7 @@ export default function App() {
   const isLoading = sessionState === 'connecting';
 
   const voiceEngineLabel = useMemo(() => {
-    return import.meta.env.VITE_VOICE_LABEL ?? 'MINIMAX CUSTOM ?';
+    return import.meta.env.VITE_VOICE_LABEL ?? 'CUSTOM JARVIS VOICE';
   }, []);
 
   async function fetchLiveKitToken() {
@@ -119,9 +127,7 @@ export default function App() {
       setSessionState('idle');
       setLiveMode('listening');
       setStatusText(IDLE_STATUS);
-      if (audioContainerRef.current) {
-        audioContainerRef.current.innerHTML = '';
-      }
+      clearAudioElements();
     });
 
     room.on(RoomEvent.ConnectionStateChanged, (state) => {
@@ -140,6 +146,12 @@ export default function App() {
         return;
       }
 
+      if (activeAudioTrackSidRef.current && activeAudioTrackSidRef.current !== publication.trackSid) {
+        clearAudioElements();
+      }
+
+      activeAudioTrackSidRef.current = publication.trackSid;
+
       const el = track.attach();
       el.autoplay = true;
       el.dataset.trackSid = publication.trackSid;
@@ -151,12 +163,15 @@ export default function App() {
       }
     });
 
-    room.on(RoomEvent.TrackUnsubscribed, (track) => {
+    room.on(RoomEvent.TrackUnsubscribed, (track, publication) => {
       if (track.kind !== Track.Kind.Audio) {
         return;
       }
 
       track.detach().forEach((el) => el.remove());
+      if (!publication?.trackSid || publication.trackSid === activeAudioTrackSidRef.current) {
+        activeAudioTrackSidRef.current = null;
+      }
     });
 
     room.on(RoomEvent.DataReceived, (payload) => {
@@ -209,9 +224,7 @@ export default function App() {
       setSessionState('idle');
       setLiveMode('listening');
       setStatusText(IDLE_STATUS);
-      if (audioContainerRef.current) {
-        audioContainerRef.current.innerHTML = '';
-      }
+      clearAudioElements();
     }
   }
 

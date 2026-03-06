@@ -240,6 +240,12 @@ class JarvisAgent(Agent):
             tmp_path = await synthesize_custom_voice(content)
             async for frame in audio_frames_from_file(tmp_path):
                 yield frame
+            return
+        except Exception:
+            # Keep conversation audible if custom voice service is warming up/unavailable.
+            async for frame in Agent.default.tts_node(self, _single_text_stream(content), model_settings):
+                yield frame
+            return
         finally:
             if tmp_path:
                 try:
@@ -306,5 +312,3 @@ if __name__ == '__main__':
             agent_name=os.getenv('AGENT_NAME', 'jarvis-agent'),
         )
     )
-
-

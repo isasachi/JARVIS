@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Room, RoomEvent } from 'livekit-client';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8787';
+const DEFAULT_API_BASE =
+  typeof window !== 'undefined' && window.location.hostname === 'localhost'
+    ? 'http://localhost:8787'
+    : 'https://jarvis-api-production-abff.up.railway.app';
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? DEFAULT_API_BASE;
 const ROOM_NAME = import.meta.env.VITE_LIVEKIT_ROOM ?? 'jarvis-room';
 
 const IDLE_STATUS = '? CLICK ORB TO START SESSION';
@@ -86,6 +91,9 @@ export default function App() {
     }
 
     const data = await response.json();
+    if (!data?.token || !data?.url) {
+      throw new Error('Invalid token response from API');
+    }
     return data;
   }
 
@@ -254,3 +262,4 @@ export default function App() {
     </>
   );
 }
+

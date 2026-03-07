@@ -1,4 +1,5 @@
-﻿import os
+﻿import logging
+import os
 import tempfile
 import time
 from dataclasses import dataclass
@@ -11,6 +12,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 from TTS.api import TTS
+
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
+logger = logging.getLogger('jarvis_voice')
 
 
 @dataclass
@@ -28,10 +32,12 @@ class CustomVoiceEngine:
         self.config = config
         self._tts: TTS | None = None
         self._speaker_wav_path: str | None = None
+        self._speaker_source = 'unknown'
         self._ready = False
         self._error = ''
         self._startup_ms = 0
         self._synth_lock = Lock()
+        self._warmup_audio: bytes | None = None
 
     @property
     def ready(self) -> bool:
@@ -52,26 +58,37 @@ class CustomVoiceEngine:
         try:
             self._speaker_wav_path = self._resolve_speaker_wav()
             self._tts = TTS(self.config.model_name)
-            self._prime_model()
+            self._warmup_audio = self._prime_model()
             self._ready = True
             self._error = ''
         except Exception as exc:
             self._ready = False
             self._error = str(exc)
+            logger.exception('voice startup failed: %s', exc)
             raise
         finally:
             self._startup_ms = int((time.monotonic() - start) * 1000)
+
+        logger.info(
+            'voice startup complete model=%s language=%s speaker_source=%s startup_ms=%s',
+            self.config.model_name,
+            self.config.language,
+            self._speaker_source,
+            self._startup_ms,
+        )
 
     def synthesize(self, text: str, language: str | None = None) -> bytes:
         if not self._ready or self._tts is None or self._speaker_wav_path is None:
             raise RuntimeError('voice engine is not ready')
 
-        if text is None:
+        if text is None or text.strip() == '':
             raise ValueError('text is required')
 
-        # Preserve user text content while rejecting empty requests.
-        if text.strip() == '':
-            raise ValueError('text is required')
+        if self._warmup_audio and text.strip() == self.config.warmup_text.strip():
+            logger.info('voice synth cache hit for warmup text')
+            return self._warmup_audio
+
+        logger.info('voice synth request chars=%s', len(text))
 
         with self._synth_lock:
             out_fd, out_path = tempfile.mkstemp(prefix='jarvis_', suffix='.wav')
@@ -90,7 +107,7 @@ class CustomVoiceEngine:
                 if os.path.exists(out_path):
                     os.remove(out_path)
 
-    def _prime_model(self) -> None:
+    def _prime_model(self) -> bytes:
         assert self._tts is not None
         assert self._speaker_wav_path is not None
 
@@ -104,6 +121,8 @@ class CustomVoiceEngine:
                     language=self.config.language,
                     file_path=out_path,
                 )
+            with open(out_path, 'rb') as f:
+                return f.read()
         finally:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -111,6 +130,7 @@ class CustomVoiceEngine:
     def _resolve_speaker_wav(self) -> str:
         bundled = self.config.bundled_wav_path
         if os.path.exists(bundled) and os.path.getsize(bundled) > 0:
+            self._speaker_source = 'bundled_file'
             return bundled
 
         custom_url = self.config.custom_wav_url.strip()
@@ -131,10 +151,10 @@ class CustomVoiceEngine:
         if os.path.getsize(target) == 0:
             raise RuntimeError('Downloaded custom voice WAV is empty')
 
+        self._speaker_source = 'downloaded_url'
         return target
 
     def _apply_runtime_tuning(self) -> None:
-        # CPU-focused tuning so a larger Railway machine stays predictable under load.
         num_threads = int(os.getenv('TORCH_NUM_THREADS', '6'))
         num_interop_threads = int(os.getenv('TORCH_INTEROP_THREADS', '2'))
         torch.set_num_threads(max(1, num_threads))

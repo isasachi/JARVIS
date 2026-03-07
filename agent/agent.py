@@ -1,5 +1,6 @@
 ﻿import asyncio
 import json
+import logging
 import os
 import tempfile
 import time
@@ -12,13 +13,14 @@ from dotenv import load_dotenv
 from livekit.agents import Agent, AgentSession, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
 from livekit.agents.utils.audio import audio_frames_from_file
 
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
+logger = logging.getLogger('jarvis_agent')
+
 load_dotenv()
 
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
 N8N_RESPONSE_FIELD = os.getenv('N8N_RESPONSE_FIELD', 'output').strip() or 'output'
 
-
-# Keep models configurable for STT/LLM pipeline, but voice output is custom-only via VOICE_SERVICE_URL.
 STT_MODEL = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3:multi')
 LLM_MODEL = os.getenv('FREE_LLM_MODEL', 'openai/gpt-4o-mini')
 SESSION_TTS_MODEL = os.getenv('FREE_TTS_MODEL', 'cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc')
@@ -160,6 +162,7 @@ async def post_to_n8n(payload: dict) -> dict:
             else:
                 body = text
 
+            logger.info('n8n response status=%s', response.status)
             return {
                 'ok': 200 <= response.status < 300,
                 'status': response.status,
@@ -182,6 +185,7 @@ async def wait_for_voice_ready() -> None:
                     if 200 <= response.status < 300:
                         payload = await response.json()
                         if payload.get('ok'):
+                            logger.info('voice ready model=%s language=%s', payload.get('model'), payload.get('language'))
                             return
                         last_error = payload.get('error') or 'voice service reported not ready'
                     else:
@@ -215,6 +219,7 @@ async def synthesize_custom_voice(text: str) -> str:
             async with session.post(f'{VOICE_SERVICE_URL}/synthesize', json=payload) as response:
                 if 200 <= response.status < 300:
                     audio_bytes = await response.read()
+                    logger.info('voice synth ok chars=%s bytes=%s attempt=%s', len(text), len(audio_bytes), attempt)
                     tmp_file = tempfile.NamedTemporaryFile(prefix='jarvis_tts_', suffix='.wav', delete=False)
                     tmp_file.write(audio_bytes)
                     tmp_file.flush()
@@ -225,6 +230,7 @@ async def synthesize_custom_voice(text: str) -> str:
                 detail = await response.text()
                 transient = response.status in (502, 503, 504)
                 can_retry = transient and time.monotonic() < deadline and attempt < 2
+                logger.warning('voice synth failed status=%s attempt=%s detail=%s', response.status, attempt, detail[:200])
                 if can_retry:
                     await asyncio.sleep(2)
                     continue
@@ -244,14 +250,17 @@ class JarvisAgent(Agent):
 
         content = _normalize_text(''.join(chunks))
         if not content:
+            logger.info('tts_node skipped empty content')
             return
 
+        logger.info('tts_node content chars=%s', len(content))
         tmp_path: str | None = None
         try:
             tmp_path = await synthesize_custom_voice(content)
             async for frame in audio_frames_from_file(tmp_path):
                 yield frame
         except Exception as exc:
+            logger.exception('tts_node failed: %s', exc)
             raise RuntimeError(f'custom voice only mode failed: {exc}') from exc
         finally:
             if tmp_path:
@@ -263,8 +272,11 @@ class JarvisAgent(Agent):
     @function_tool()
     async def route_to_n8n(self, context: RunContext, user_request: str) -> str:
         query = user_request if isinstance(user_request, str) else ''
-        category = _classify_query(_normalize_text(query))
-        requires_approval, risk_reason = _risk_for_query(_normalize_text(query))
+        normalized = _normalize_text(query)
+        category = _classify_query(normalized)
+        requires_approval, risk_reason = _risk_for_query(normalized)
+
+        logger.info('route_to_n8n called chars=%s category=%s approval=%s', len(query), category, requires_approval)
 
         payload = {
             'user': {
@@ -296,6 +308,7 @@ class JarvisAgent(Agent):
 
 
 async def entrypoint(ctx: JobContext) -> None:
+    logger.info('entrypoint start room=%s', ctx.room.name)
     await wait_for_voice_ready()
     await ctx.connect()
 
@@ -308,6 +321,7 @@ async def entrypoint(ctx: JobContext) -> None:
     agent = JarvisAgent()
 
     await session.start(room=ctx.room, agent=agent)
+    logger.info('session started, sending welcome')
     await session.say('Bienvenido señor, ¿qué haremos hoy?')
 
 

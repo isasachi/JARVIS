@@ -63,6 +63,9 @@ class AnySourceParticipantAudioInput(AudioInput):
         self._forward_task: asyncio.Task | None = None
         self._attached = True
         self._closed = False
+        self._current_sid: str | None = None
+        self._frames_in = 0
+        self._frames_out = 0
 
         room.on('track_subscribed', self._on_track_subscribed)
         room.on('track_unpublished', self._on_track_unpublished)
@@ -79,6 +82,13 @@ class AnySourceParticipantAudioInput(AudioInput):
         item = await self._queue.get()
         if item is None:
             raise StopAsyncIteration
+
+        self._frames_out += 1
+        if self._frames_out == 1:
+            logger.info('custom audio first frame delivered to session sample_rate=%s samples=%s', item.sample_rate, item.samples_per_channel)
+        elif self._frames_out % 100 == 0:
+            logger.info('custom audio delivered frames=%s', self._frames_out)
+
         return item
 
     def _bind_existing_track(self) -> None:
@@ -139,7 +149,13 @@ class AnySourceParticipantAudioInput(AudioInput):
         publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ) -> None:
+        if self._current_sid == publication.sid and self._stream is not None:
+            return
+
         self._close_stream()
+        self._current_sid = publication.sid
+        self._frames_in = 0
+        self._frames_out = 0
         self._stream = rtc.AudioStream.from_track(
             track=track,
             sample_rate=self._sample_rate,
@@ -169,6 +185,13 @@ class AnySourceParticipantAudioInput(AudioInput):
                     return
                 if not self._attached:
                     continue
+
+                self._frames_in += 1
+                if self._frames_in == 1:
+                    logger.info('custom audio first frame received from track sample_rate=%s samples=%s', event.frame.sample_rate, event.frame.samples_per_channel)
+                elif self._frames_in % 100 == 0:
+                    logger.info('custom audio received frames=%s', self._frames_in)
+
                 await self._queue.put(event.frame)
         except asyncio.CancelledError:
             return
@@ -176,10 +199,12 @@ class AnySourceParticipantAudioInput(AudioInput):
             logger.exception('custom audio forward failed: %s', exc)
         finally:
             logger.info(
-                'custom audio forward stopped participant=%s source=%s sid=%s',
+                'custom audio forward stopped participant=%s source=%s sid=%s frames_in=%s frames_out=%s',
                 participant.identity,
                 rtc.TrackSource.Name(publication.source),
                 publication.sid,
+                self._frames_in,
+                self._frames_out,
             )
 
     def _close_stream(self) -> None:
@@ -190,6 +215,7 @@ class AnySourceParticipantAudioInput(AudioInput):
         if self._stream is not None:
             stream = self._stream
             self._stream = None
+            self._current_sid = None
             asyncio.create_task(stream.aclose())
 
     async def aclose(self) -> None:
@@ -493,6 +519,12 @@ async def entrypoint(ctx: JobContext) -> None:
             publication.muted,
             publication.track is not None,
         )
+        if publication.kind == rtc.TrackKind.KIND_AUDIO and not publication.subscribed:
+            try:
+                publication.set_subscribed(True)
+                logger.info('forced subscribe on audio publication sid=%s', publication.sid)
+            except Exception as exc:
+                logger.warning('failed forcing publication subscribe sid=%s error=%s', publication.sid, exc)
 
     def _on_room_track_subscribed(track, publication, remote_participant):
         logger.info(

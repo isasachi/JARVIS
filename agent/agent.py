@@ -10,7 +10,7 @@ from typing import AsyncIterable
 
 import aiohttp
 from dotenv import load_dotenv
-from livekit.agents import Agent, AgentSession, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
+from livekit.agents import Agent, AgentSession, AutoSubscribe, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
 from livekit.agents.utils.audio import audio_frames_from_file
 from livekit.plugins import silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -23,7 +23,7 @@ load_dotenv()
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
 N8N_RESPONSE_FIELD = os.getenv('N8N_RESPONSE_FIELD', 'output').strip() or 'output'
 
-STT_MODEL = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3:multi')
+STT_MODEL = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3-general:multi')
 LLM_MODEL = os.getenv('FREE_LLM_MODEL', 'openai/gpt-4o-mini')
 SESSION_TTS_MODEL = os.getenv('FREE_TTS_MODEL', 'cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc')
 
@@ -315,7 +315,9 @@ class JarvisAgent(Agent):
 async def entrypoint(ctx: JobContext) -> None:
     logger.info('entrypoint start room=%s', ctx.room.name)
     await wait_for_voice_ready()
-    await ctx.connect()
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    participant = await ctx.wait_for_participant()
+    logger.info('participant connected identity=%s', participant.identity)
 
     session = AgentSession(
         turn_detection=MultilingualModel(),
@@ -341,5 +343,6 @@ if __name__ == '__main__':
             agent_name=os.getenv('AGENT_NAME', 'jarvis-agent'),
         )
     )
+
 
 

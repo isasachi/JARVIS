@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from livekit.agents import Agent, AgentSession, AutoSubscribe, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
 from livekit.agents.utils.audio import audio_frames_from_file
 from livekit.plugins import silero
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
 logger = logging.getLogger('jarvis_agent')
@@ -320,14 +319,27 @@ async def entrypoint(ctx: JobContext) -> None:
     logger.info('participant connected identity=%s', participant.identity)
 
     session = AgentSession(
-        turn_detection=MultilingualModel(),
+        turn_detection='vad',
         vad=build_vad(),
         stt=STT_MODEL,
         llm=LLM_MODEL,
         tts=SESSION_TTS_MODEL,
         min_endpointing_delay=0.25,
-        max_endpointing_delay=6.0,
+        max_endpointing_delay=3.0,
+        aec_warmup_duration=None,
     )
+
+    @session.on('user_state_changed')
+    def _on_user_state(ev):
+        logger.info('user_state changed %s -> %s', ev.old_state, ev.new_state)
+
+    @session.on('user_input_transcribed')
+    def _on_user_transcribed(ev):
+        logger.info('user_input_transcribed final=%s text=%s', ev.is_final, ev.transcript)
+
+    @session.on('error')
+    def _on_session_error(ev):
+        logger.error('session error source=%s error=%s', type(ev.source).__name__, ev.error)
 
     agent = JarvisAgent()
 

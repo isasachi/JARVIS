@@ -49,6 +49,8 @@ Required for all core services:
 - `N8N_WEBHOOK_URL`
 - `N8N_RESPONSE_FIELD=output`
 - `VOICE_SERVICE_URL` (jarvis-voice URL)
+- `FREE_STT_MODEL=deepgram/nova-3:es` (or valid LiveKit Inference STT model)
+- `FREE_STT_LANGUAGE=es` and `FREE_STT_SAMPLE_RATE=24000`
 
 Required for custom voice:
 
@@ -96,3 +98,4 @@ Then set service variables in Railway UI:
 - `.env` must stay git-ignored.
 - Never commit API keys, webhook URLs with credentials, or private tokens.
 - Rotate secrets that were ever shared publicly.
+

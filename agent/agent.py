@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import os
@@ -11,7 +11,19 @@ from typing import AsyncIterable
 import aiohttp
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, AutoSubscribe, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    AutoSubscribe,
+    JobContext,
+    ModelSettings,
+    RunContext,
+    WorkerOptions,
+    cli,
+    function_tool,
+    inference,
+)
+from livekit.agents.metrics import STTMetrics
 from livekit.agents.utils.audio import audio_frames_from_file
 from livekit.agents.voice.io import AudioInput
 from livekit.plugins import silero
@@ -24,7 +36,9 @@ load_dotenv()
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
 N8N_RESPONSE_FIELD = os.getenv('N8N_RESPONSE_FIELD', 'output').strip() or 'output'
 
-STT_MODEL = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3-general:multi')
+STT_MODEL_RAW = os.getenv('FREE_STT_MODEL', 'deepgram/nova-3:es').strip() or 'deepgram/nova-3:es'
+STT_LANGUAGE = os.getenv('FREE_STT_LANGUAGE', '').strip()
+STT_SAMPLE_RATE = int(os.getenv('FREE_STT_SAMPLE_RATE', '24000'))
 LLM_MODEL = os.getenv('FREE_LLM_MODEL', 'openai/gpt-4o-mini')
 SESSION_TTS_MODEL = os.getenv('FREE_TTS_MODEL', 'cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc')
 
@@ -36,6 +50,58 @@ VOICE_READY_POLL_SECONDS = float(os.getenv('VOICE_READY_POLL_SECONDS', '2'))
 
 USER_NAME = os.getenv('JARVIS_USER_NAME', 'Isaac')
 USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
+
+
+def _resolve_stt_model_and_language() -> tuple[str, str]:
+    model = STT_MODEL_RAW
+    language = STT_LANGUAGE
+
+    if ':' in model:
+        head, _, tail = model.rpartition(':')
+        if '/' in head and tail and not language:
+            model = head
+            language = tail
+
+    aliases = {
+        'deepgram/nova-3-general': 'deepgram/nova-3',
+        'deepgram/nova-3-general-en': 'deepgram/nova-3',
+    }
+    model = aliases.get(model, model)
+
+    if not language:
+        language = 'es'
+
+    if language.lower() in ('spanish', 'espanol'):
+        language = 'es'
+
+    return model, language
+
+
+def build_stt():
+    model, language = _resolve_stt_model_and_language()
+    sample_rate = STT_SAMPLE_RATE if STT_SAMPLE_RATE > 0 else 24000
+    extra_kwargs: dict[str, object] = {
+        'interim_results': True,
+    }
+
+    if model.startswith('deepgram/'):
+        extra_kwargs.update(
+            {
+                'endpointing': 50,
+                'punctuate': True,
+                'smart_format': True,
+            }
+        )
+
+    logger.info('loading stt model=%s language=%s sample_rate=%s', model, language, sample_rate)
+    return inference.STT(
+        model=model,
+        language=language,
+        sample_rate=sample_rate,
+        extra_kwargs=extra_kwargs,
+    )
+
+
 def build_vad():
     logger.info('loading silero vad')
     return silero.VAD.load()
@@ -542,7 +608,7 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(
         turn_detection='vad',
         vad=build_vad(),
-        stt=STT_MODEL,
+        stt=build_stt(),
         llm=LLM_MODEL,
         tts=SESSION_TTS_MODEL,
         min_endpointing_delay=0.25,
@@ -562,6 +628,23 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_session_error(ev):
         logger.error('session error source=%s error=%s', type(ev.source).__name__, ev.error)
 
+    @session.on('metrics_collected')
+    def _on_metrics(ev):
+        metrics = ev.metrics
+        if isinstance(metrics, STTMetrics):
+            metadata = getattr(metrics, 'metadata', None)
+            model_name = getattr(metadata, 'model_name', 'unknown')
+            model_provider = getattr(metadata, 'model_provider', 'unknown')
+            logger.info(
+                'stt metrics request_id=%s audio_duration=%.2f duration=%.2f streamed=%s model=%s provider=%s',
+                getattr(metrics, 'request_id', ''),
+                float(getattr(metrics, 'audio_duration', 0.0) or 0.0),
+                float(getattr(metrics, 'duration', 0.0) or 0.0),
+                bool(getattr(metrics, 'streamed', False)),
+                model_name,
+                model_provider,
+            )
+
     @session.on('close')
     def _on_session_close(_ev):
         ctx.room.off('track_subscribed', _on_room_track_subscribed)
@@ -573,7 +656,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await session.start(room=ctx.room, agent=agent)
     logger.info('session started, sending welcome')
-    await session.say('Bienvenido señor, ¿qué haremos hoy?')
+    await session.say('Bienvenido se\u00f1or, \u00bfqu\u00e9 haremos hoy?')
 
 
 if __name__ == '__main__':
@@ -583,6 +666,3 @@ if __name__ == '__main__':
             agent_name=os.getenv('AGENT_NAME', 'jarvis-agent'),
         )
     )
-
-
-

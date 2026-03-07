@@ -12,6 +12,7 @@ import aiohttp
 from dotenv import load_dotenv
 from livekit.agents import Agent, AgentSession, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
 from livekit.agents.utils.audio import audio_frames_from_file
+from livekit.plugins import silero
 
 logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
 logger = logging.getLogger('jarvis_agent')
@@ -33,6 +34,9 @@ VOICE_READY_POLL_SECONDS = float(os.getenv('VOICE_READY_POLL_SECONDS', '2'))
 
 USER_NAME = os.getenv('JARVIS_USER_NAME', 'Isaac')
 USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
+def build_vad():
+    logger.info('loading silero vad')
+    return silero.VAD.load()
 
 
 def _load_system_prompt() -> str:
@@ -313,6 +317,7 @@ async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
 
     session = AgentSession(
+        vad=build_vad(),
         stt=STT_MODEL,
         llm=LLM_MODEL,
         tts=SESSION_TTS_MODEL,
@@ -332,3 +337,4 @@ if __name__ == '__main__':
             agent_name=os.getenv('AGENT_NAME', 'jarvis-agent'),
         )
     )
+

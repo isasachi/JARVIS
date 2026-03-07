@@ -10,8 +10,10 @@ from typing import AsyncIterable
 
 import aiohttp
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit.agents import Agent, AgentSession, AutoSubscribe, JobContext, ModelSettings, RunContext, WorkerOptions, cli, function_tool
 from livekit.agents.utils.audio import audio_frames_from_file
+from livekit.agents.voice.io import AudioInput
 from livekit.plugins import silero
 
 logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
@@ -37,6 +39,169 @@ USER_TIMEZONE = os.getenv('JARVIS_USER_TIMEZONE', 'America/Lima')
 def build_vad():
     logger.info('loading silero vad')
     return silero.VAD.load()
+
+
+class AnySourceParticipantAudioInput(AudioInput):
+    def __init__(
+        self,
+        room: rtc.Room,
+        participant_identity: str,
+        *,
+        sample_rate: int = 24000,
+        num_channels: int = 1,
+        frame_size_ms: int = 50,
+    ) -> None:
+        super().__init__(label='AnySourceParticipantAudioInput')
+        self._room = room
+        self._participant_identity = participant_identity
+        self._sample_rate = sample_rate
+        self._num_channels = num_channels
+        self._frame_size_ms = frame_size_ms
+
+        self._queue: asyncio.Queue[rtc.AudioFrame | None] = asyncio.Queue()
+        self._stream: rtc.AudioStream | None = None
+        self._forward_task: asyncio.Task | None = None
+        self._attached = True
+        self._closed = False
+
+        room.on('track_subscribed', self._on_track_subscribed)
+        room.on('track_unpublished', self._on_track_unpublished)
+
+        self._bind_existing_track()
+
+    def on_attached(self) -> None:
+        self._attached = True
+
+    def on_detached(self) -> None:
+        self._attached = False
+
+    async def __anext__(self) -> rtc.AudioFrame:
+        item = await self._queue.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
+    def _bind_existing_track(self) -> None:
+        participant = self._room.remote_participants.get(self._participant_identity)
+        if not participant:
+            logger.info('custom audio input waiting for participant track identity=%s', self._participant_identity)
+            return
+
+        for publication in participant.track_publications.values():
+            track = publication.track
+            if track is None:
+                continue
+            if track.kind == rtc.TrackKind.KIND_AUDIO:
+                self._bind_track(track, publication, participant)
+                return
+
+        logger.info('custom audio input found no published audio track identity=%s', self._participant_identity)
+
+    def _on_track_subscribed(
+        self,
+        track: rtc.RemoteTrack,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        if participant.identity != self._participant_identity:
+            return
+        if track.kind != rtc.TrackKind.KIND_AUDIO:
+            return
+
+        logger.info(
+            'custom audio track subscribed participant=%s source=%s sid=%s',
+            participant.identity,
+            rtc.TrackSource.Name(publication.source),
+            publication.sid,
+        )
+        self._bind_track(track, publication, participant)
+
+    def _on_track_unpublished(
+        self,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        if participant.identity != self._participant_identity:
+            return
+
+        if self._stream is not None:
+            logger.info(
+                'custom audio track unpublished participant=%s source=%s sid=%s',
+                participant.identity,
+                rtc.TrackSource.Name(publication.source),
+                publication.sid,
+            )
+            self._close_stream()
+
+    def _bind_track(
+        self,
+        track: rtc.RemoteTrack,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        self._close_stream()
+        self._stream = rtc.AudioStream.from_track(
+            track=track,
+            sample_rate=self._sample_rate,
+            num_channels=self._num_channels,
+            frame_size_ms=self._frame_size_ms,
+        )
+        self._forward_task = asyncio.create_task(
+            self._forward_audio(self._stream, publication, participant),
+            name='custom_audio_forward',
+        )
+
+    async def _forward_audio(
+        self,
+        stream: rtc.AudioStream,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        try:
+            logger.info(
+                'custom audio forward started participant=%s source=%s sid=%s',
+                participant.identity,
+                rtc.TrackSource.Name(publication.source),
+                publication.sid,
+            )
+            async for event in stream:
+                if self._closed:
+                    return
+                if not self._attached:
+                    continue
+                await self._queue.put(event.frame)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.exception('custom audio forward failed: %s', exc)
+        finally:
+            logger.info(
+                'custom audio forward stopped participant=%s source=%s sid=%s',
+                participant.identity,
+                rtc.TrackSource.Name(publication.source),
+                publication.sid,
+            )
+
+    def _close_stream(self) -> None:
+        if self._forward_task:
+            self._forward_task.cancel()
+            self._forward_task = None
+
+        if self._stream is not None:
+            stream = self._stream
+            self._stream = None
+            asyncio.create_task(stream.aclose())
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
+        self._room.off('track_subscribed', self._on_track_subscribed)
+        self._room.off('track_unpublished', self._on_track_unpublished)
+
+        self._close_stream()
+        await self._queue.put(None)
 
 
 def _load_system_prompt() -> str:
@@ -314,9 +479,33 @@ class JarvisAgent(Agent):
 async def entrypoint(ctx: JobContext) -> None:
     logger.info('entrypoint start room=%s', ctx.room.name)
     await wait_for_voice_ready()
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
     participant = await ctx.wait_for_participant()
     logger.info('participant connected identity=%s', participant.identity)
+
+    for publication in participant.track_publications.values():
+        logger.info(
+            'participant publication sid=%s kind=%s source=%s subscribed=%s muted=%s has_track=%s',
+            publication.sid,
+            rtc.TrackKind.Name(publication.kind),
+            rtc.TrackSource.Name(publication.source),
+            publication.subscribed,
+            publication.muted,
+            publication.track is not None,
+        )
+
+    def _on_room_track_subscribed(track, publication, remote_participant):
+        logger.info(
+            'room track_subscribed participant=%s kind=%s source=%s sid=%s',
+            remote_participant.identity,
+            rtc.TrackKind.Name(track.kind),
+            rtc.TrackSource.Name(publication.source),
+            publication.sid,
+        )
+
+    ctx.room.on('track_subscribed', _on_room_track_subscribed)
+
+    custom_audio_input = AnySourceParticipantAudioInput(ctx.room, participant.identity)
 
     session = AgentSession(
         turn_detection='vad',
@@ -340,6 +529,13 @@ async def entrypoint(ctx: JobContext) -> None:
     @session.on('error')
     def _on_session_error(ev):
         logger.error('session error source=%s error=%s', type(ev.source).__name__, ev.error)
+
+    @session.on('close')
+    def _on_session_close(_ev):
+        ctx.room.off('track_subscribed', _on_room_track_subscribed)
+        asyncio.create_task(custom_audio_input.aclose())
+
+    session.input.audio = custom_audio_input
 
     agent = JarvisAgent()
 

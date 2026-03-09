@@ -30,7 +30,7 @@ from livekit.agents import (
     cli,
     llm,
 )
-from livekit.agents import VoicePipelineAgent
+from livekit.agents.pipeline import VoicePipelineAgent
 from livekit.agents import tts as agents_tts
 from livekit.plugins import deepgram, silero
 

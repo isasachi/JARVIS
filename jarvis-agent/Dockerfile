@@ -9,10 +9,11 @@ RUN apt-get update && apt-get install -y \
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir livekit-agents==0.11.2 \
+RUN pip install --no-cache-dir \
+    livekit-agents==0.11.2 \
     livekit-plugins-deepgram==0.6.4 \
-    livekit-plugins-openai==0.6.4 \
-    livekit-plugins-silero==0.6.4
+    livekit-plugins-openai==0.6.0 \
+    livekit-plugins-silero==0.6.0
 
 RUN pip install --no-cache-dir -r requirements.txt
 

@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir \
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN python3 -c "import livekit.agents; print([x for x in dir(livekit.agents) if not x.startswith('_')])"
+
 RUN pip show livekit-agents
 
 RUN python -c "import silero; silero.VAD.load()" || true

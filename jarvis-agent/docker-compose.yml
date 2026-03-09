@@ -1,0 +1,8 @@
+version: '3.8'
+services:
+  jarvis-agent:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=DEBUG

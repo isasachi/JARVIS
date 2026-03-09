@@ -21,20 +21,25 @@ from typing import Annotated
 import httpx
 from dotenv import load_dotenv
 
-from livekit.agents import (
-    AutoSubscribe,
-    JobContext,
-    WorkerOptions,
-    cli,
-    llm,
-)
-from livekit.agents.pipeline import VoicePipelineAgent
-from livekit.plugins import deepgram, openai, silero
+
+def load_system_prompt():
+    """Carga el system prompt desde el archivo system_prompt_es.md."""
+    prompt_path = os.path.join(os.path.dirname(__file__), "system_prompt_es.md")
+    if os.path.exists(prompt_path):
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return None
+
 
 load_dotenv()
 
 logger = logging.getLogger("jarvis-agent")
 logger.setLevel(logging.INFO)
+
+SYSTEM_PROMPT = load_system_prompt()
+
+if SYSTEM_PROMPT is None:
+    logger.warning("system_prompt_es.md not found, using default prompt")
 
 # ─────────────────────────────────────────────
 # Configuración
@@ -158,26 +163,34 @@ async def entrypoint(ctx: JobContext):
     # Contexto inicial del sistema para el LLM
     initial_ctx = llm.ChatContext().append(
         role="system",
-        text=(
-            "Eres J.A.R.V.I.S. (Just A Rather Very Intelligent System), "
-            "el asistente personal de voz de tu usuario. "
-            "Tu personalidad es eficiente, sofisticado y ligeramente formal, "
-            "similar al JARVIS de Iron Man — inteligente, proactivo y preciso.\n\n"
-            "## Cómo operar\n"
-            "- Cuando el usuario te pida ejecutar una acción (enviar email, agendar, "
-            "crear tarea, registrar gasto, etc.), SIEMPRE usa la herramienta `call_jarvis`.\n"
-            "- Para preguntas conversacionales simples, responde directamente sin usar tools.\n"
+        text=SYSTEM_PROMPT + "\n\n## Instrucciones adicionales para voz\n"
+            "- Cuando el usuario te pida ejecutar una acción, SIEMPRE usa la herramienta `call_jarvis`.\n"
             "- Mantén las respuestas de voz CORTAS y NATURALES — esto es audio, no texto.\n"
-            "- Confirma las acciones de forma concisa: '✓ Email enviado a María.' "
-            "en lugar de descripciones largas.\n"
-            "- Habla en el idioma en que el usuario te hable (español por defecto).\n"
-            "- Si necesitas aclaración antes de ejecutar una acción sensible "
-            "(como enviar un email), pídela brevemente.\n\n"
-            "## Frases de bienvenida\n"
-            "Al conectarse el usuario, salúdalo con algo como: "
-            "'Buenas, ¿en qué puedo ayudarte?' o "
-            "'JARVIS en línea. ¿Qué necesitas?'"
-        ),
+            "- Confirma las acciones de forma concisa: 'Hecho, Señor.' en lugar de descripciones largas.\n"
+            "- Habla en español.\n\n"
+            "## Saludo inicial\n"
+            "Al conectarse el usuario, salúdalo con: 'JARVIS en línea. ¿En qué puedo ayudarle, Señor?'"
+            if SYSTEM_PROMPT
+            else (
+                "Eres J.A.R.V.I.S. (Just A Rather Very Intelligent System), "
+                "el asistente personal de voz de tu usuario. "
+                "Tu personalidad es eficiente, sofisticado y ligeramente formal, "
+                "similar al JARVIS de Iron Man — inteligente, proactivo y preciso.\n\n"
+                "## Cómo operar\n"
+                "- Cuando el usuario te pida ejecutar una acción (enviar email, agendar, "
+                "crear tarea, registrar gasto, etc.), SIEMPRE usa la herramienta `call_jarvis`.\n"
+                "- Para preguntas conversacionales simples, responde directamente sin usar tools.\n"
+                "- Mantén las respuestas de voz CORTAS y NATURALES — esto es audio, no texto.\n"
+                "- Confirma las acciones de forma concisa: '✓ Email enviado a María.' "
+                "en lugar de descripciones largas.\n"
+                "- Habla en el idioma en que el usuario te hable (español por defecto).\n"
+                "- Si necesitas aclaración antes de ejecutar una acción sensible "
+                "(como enviar un email), pídela brevemente.\n\n"
+                "## Frases de bienvenida\n"
+                "Al conectarse el usuario, salúdalo con algo como: "
+                "'Buenas, ¿en qué puedo ayudarte?' o "
+                "'JARVIS en línea. ¿Qué necesitas?'"
+            ),
     )
 
     # Conectar a la sala y suscribirse solo a audio

@@ -11,6 +11,8 @@ COPY requirements.txt .
 ARG CACHE_BUST=1
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN pip show livekit-agents
+
 RUN python -c "import silero; silero.VAD.load()" || true
 
 COPY . .
